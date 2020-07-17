@@ -29,7 +29,7 @@ import java.util.stream.StreamSupport;
 import static java.lang.String.format;
 import static java.lang.System.*;
 
-@Command
+@Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
 	public static final String NOT_LOGGED_IN_MESSAGE = "Log in to your cluster using either kubectl or oc and try again";
 	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config (~/.kube/config)")
@@ -41,7 +41,7 @@ public class Main implements Callable<Integer> {
 	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored (default: ReplicationController, Pod).")
 	String[] ignoredResourceKinds = new String[]{ "ReplicationController", "Pod" };
 
-	@Option(names = {"-v", "--verbose"}, description = "Outputs more debugging level information")
+	@Option(names = {"-v", "--verbose"}, description = "Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)")
 	boolean[] verbosity;
 
 	@Option(arity = "1", names = {"-C", "--chart-name"}, description = "The name of the Helm 3 Chart to be created (default to the name of the namespace)")

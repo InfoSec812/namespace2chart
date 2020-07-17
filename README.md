@@ -30,21 +30,14 @@ Usage: namespace2chart [-v] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
                        [-C=<chartName>] [-n=<userSelectedNamespace>] [-i
                        [=<ignoredResourceKinds>...]]...
   -c, --cluster=<kubeClusterUrl>
-                  The URL of the Kubernetes/OpenShift cluster to target
-                    (defaults to currently logged in cluster from ~/.
-                    kube/config)
+                  The URL of the Kubernetes/OpenShift cluster to target (defaults to currently logged in cluster from ~/.kube/config)
   -C, --chart-name=<chartName>
-                  The name of the Helm 3 Chart to be created (default to the
-                    name of the namespace)
+                  The name of the Helm 3 Chart to be created (default to the name of the namespace)
   -i, --ignored[=<ignoredResourceKinds>...]
-                  The Kubernetes/OpenShift resource types which should be
-                    ignored (default: ReplicationController, Pod).
+                  The Kubernetes/OpenShift resource types which should be ignored (default: ReplicationController, Pod).
   -k, --kube-config[=<kubeConfigFile>]
-                  The file from which to read cached Kube config (~/.
-                    kube/config)
+                  The file from which to read cached Kube config (~/.kube/config)
   -n, --namespace=<userSelectedNamespace>
-                  The namespace from which to collect resources to be converted
-                    (defaults to the currently selected namespace from ~/.
-                    kube/config)
-  -v, --verbose   Outputs more debugging level information
+                  The namespace from which to collect resources to be converted (defaults to the currently selected namespace from ~/.kube/config)
+  -v, --verbose   Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)
 ```
