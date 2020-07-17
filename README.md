@@ -1,5 +1,7 @@
 # Making It Easier To Adopt Helm 3
 
+## This project is still a Work-In-Progress and not yet completely functional. I'd love to have people help out where it makes sense though!
+
 ## Overview
 If you have been using OpenShift or Kubernetes for some time, you may be sick of *YAML-Hell*, like I am, and you are looking for solutions to make it easier to automate and manage resources in your cluster. The answer is Infrastructure-as-code, but how can we get there with the least amount of friction? 
 
