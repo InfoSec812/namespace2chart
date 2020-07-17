@@ -10,6 +10,17 @@ IF you're using OpenShift or Kubernetes, you likely already have lots of resourc
 One of the challenges we have with these technologies is that they are evolving at a very fast rate. To help address that situation, this application **DOES NOT** define *ANY* of the resources from the cluster. It instead reads that information from the cluster itself, and it's OpenAPI/Swagger specification. This is done in the hopes that it will be easier to use this tool as container orchestration evolves.
 
 
+## Project Goals
+
+1. The application **MUST** extract resources from the namespace, remove certain cluster-specific metadata/annotations, and reset the `status` field in the output YAML
+1. The application **MUST** be able to use the locally cached credentials from someplace like `~/.kube/config`
+1. The tool **MUST** have minimal required configuration options. Ideally, if you are already logged in with `oc` or `kubectl` it should run without ANY parameters
+1. The application **SHOULD** run on all three major operating systems: Windows, Linux, and MacOS as a native binary
+1. The application **SHOULD** extract all resource types from the target namespace, excepting the ignored types. (This includes Custom Resources)
+1. The application **SHOULD** find all commonalities between resources of the same *kind* and extract the differences into the `Values.yaml` of the resultant Chart
+1. The application **SHOULD** create tests in the Helm chart to ensure that the output would reproduce the content it was extracted from (excepting the cluster-specific metadata/annotations/status)
+1. The application **SHOULD** perform validation of the schema of the templates to ensure those templates match the schema extracted from the target cluster
+
 ## Build Pre-Requisites
 * Java JDK (preferably GraalVM)
 * Apache Maven >= 3.6.0
