@@ -43,3 +43,14 @@ Usage: namespace2chart [-v] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
                   The namespace from which to collect resources to be converted (defaults to the currently selected namespace from ~/.kube/config)
   -v, --verbose   Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)
 ```
+
+## Frequently Asked Questions
+
+* Why is this tool written in Java and not Go?
+  * Because of mind share... IMHO, Go is still a pretty niche language. The Java language has an amazing number of people who can contribute.
+* What about ... 
+  * [Chartify](https://github.com/kubepack/chartify)
+    * It only supports a [few resource types](https://github.com/kubepack/chartify/blob/master/pkg/kube_objects.go#L20)
+* Shouldn't I be practicing Infrastructure-as-Code, so isn't this kinda backwards?
+  * Simple answer: **YES**! 
+  * More complex answer: Often our deployments evolve quickly and organically, and we need to extract what we have been experimenting with to create that Infrastructure-as-Code
