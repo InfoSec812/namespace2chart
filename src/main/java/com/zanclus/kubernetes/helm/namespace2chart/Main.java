@@ -1,25 +1,25 @@
 package com.zanclus.kubernetes.helm.namespace2chart;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.APIAccessException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.KubeConfigReadException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.NotCurrentlyLoggedInException;
-import io.swagger.parser.OpenAPIParser;
-import io.swagger.v3.oas.models.PathItem;
-import io.swagger.v3.oas.models.media.Schema;
-import io.swagger.v3.parser.core.models.AuthorizationValue;
-import io.swagger.v3.parser.core.models.ParseOptions;
-import io.swagger.v3.parser.core.models.SwaggerParseResult;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.config.Configurator;
+import org.assimbly.docconverter.DocConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
+import javax.json.JsonObject;
+import javax.json.bind.Jsonb;
+import javax.json.bind.JsonbBuilder;
 import java.io.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
@@ -52,7 +52,6 @@ public class Main implements Callable<Integer> {
 
 	private static final Logger LOG = LoggerFactory.getLogger(Main.class);
 
-	private ObjectMapper yamlMapper;
 
 	private String namespace;
 	private String kubeMaster;
@@ -65,13 +64,11 @@ public class Main implements Callable<Integer> {
 	public Integer call() throws Exception {
 		setVerbosity();
 
-		configYamlParser();
-
-		JsonNode kubeConfig;
+		JsonObject kubeConfig;
 		try {
 			kubeConfig = loadKubeConfig();
 			if (LOG.isDebugEnabled()) {
-				LOG.debug(kubeConfig.toPrettyString());
+				LOG.debug(kubeConfig.toString());
 			}
 		} catch(KubeConfigReadException e) {
 			LOG.error(e.getLocalizedMessage());
@@ -92,7 +89,7 @@ public class Main implements Callable<Integer> {
 
 		String kubeToken;
 		try {
-			kubeToken = exctractKubeToken(kubeConfig);
+			kubeToken = extractKubeToken(kubeConfig);
 			LOG.debug("Token: {}", kubeToken);
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
@@ -101,7 +98,7 @@ public class Main implements Callable<Integer> {
 			return 3;
 		}
 
-		SwaggerParseResult apiSpec;
+		JsonObject apiSpec;
 		try {
 			apiSpec = retrieveSwaggerSpecification(kubeToken);
 		} catch(NotCurrentlyLoggedInException e) {
@@ -111,11 +108,11 @@ public class Main implements Callable<Integer> {
 			return 4;
 		}
 
-		Map<String, Schema> typeMap = buildTypeMap(apiSpec);
+		Map<String, JsonObject> typeMap = buildTypeMap(apiSpec);
 
-		Map<String, PathItem> exportPaths = buildExportPathList(apiSpec);
+		Map<String, JsonObject> exportPaths = buildExportPathList(apiSpec);
 
-		Map<String, List> retrievedResources;
+		Map<String, List<JsonObject>> retrievedResources;
 		try {
 			retrievedResources = buildResourceMap(exportPaths, typeMap, kubeToken);
 		} catch(APIAccessException e) {
@@ -124,80 +121,94 @@ public class Main implements Callable<Integer> {
 			return 5;
 		}
 
-		List<JsonNode> values = extractValuesForChart(retrievedResources);
+		List<JsonObject> values = extractValuesForChart(retrievedResources);
 
 		return 0;
 	}
 
-	private List<JsonNode> extractValuesForChart(Map<String, List> retrievedResources) {
-		// TODO: Iterate through the resource types, identify fields match/don't match and extract the non-matching items
-		// for use in the Values file.
+	private List<JsonObject> extractValuesForChart(Map<String, List<JsonObject>> retrievedResources) {
+		// TODO:
+
 		return null;
 	}
 
-	private Map<String, List> buildResourceMap(Map<String, PathItem> exportPaths, Map<String, Schema> typeMap, String kubeToken) throws APIAccessException {
-		Map<String, List> retrievedResources = new HashMap<>();
-		// TODO: implement iterative resource retrieval from the K8s/OCP API master
-		return retrievedResources;
+	private Map<String, List<JsonObject>> buildResourceMap(Map<String, JsonObject> exportPaths, Map<String, JsonObject> typeMap, String kubeToken) throws APIAccessException {
+		// TODO:
+
+		return null;
 	}
 
-	private Map<String, PathItem> buildExportPathList(SwaggerParseResult apiSpec) {
-		return apiSpec.getOpenAPI().getPaths().entrySet().stream()
+	/**
+	 * Iterate over the list of Paths from the API spec and filter down to ONLY namespaced path which return lists of resources
+	 * @param apiSpec
+	 * @return
+	 */
+	private Map<String, JsonObject> buildExportPathList(JsonObject apiSpec) {
+		return apiSpec.getJsonObject("paths").entrySet().stream()
 				.filter(e -> e.getKey().contains("{namespace}"))
-				.filter(e -> !e.getKey().contains("/watch"))
-				.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+				.filter(e -> !e.getKey().contains("/watch/"))
+				.filter(e -> !e.getKey().contains("{name}"))
+				.collect(
+						Collectors.toMap(
+								e -> e.getKey(),
+								e -> e.getValue().asJsonObject()
+						)
+				);
 	}
 
-	private Map<String, Schema> buildTypeMap(SwaggerParseResult apiSpec) {
-		return apiSpec.getOpenAPI().getComponents().getSchemas().entrySet().stream()
-				.filter(e -> e.getValue().getExtensions() != null)
-				.filter(e -> e.getValue().getExtensions().size() > 0)
-				.collect(Collectors.toMap(k -> format("#/definitions/%s", k.getKey()), Map.Entry::getValue));
+	private Map<String, JsonObject> buildTypeMap(JsonObject apiSpec) {
+		return apiSpec.getJsonObject("definitions").entrySet().stream()
+				.collect(
+						Collectors.toMap(
+								e -> format("#/definitions/%s", e.getKey()),
+								e -> e.getValue().asJsonObject()
+						)
+				);
 	}
 
-	private SwaggerParseResult retrieveSwaggerSpecification(String kubeToken) throws NotCurrentlyLoggedInException {
-		// Retrieve and parse Swagger Spec from cluster
-		AuthorizationValue apiAuth = new AuthorizationValue()
-				                             .keyName("Authorization")
-				                             .value(format("Bearer %s", kubeToken))
-				                             .type("header");
-
-		SwaggerParseResult apiSpec;
+	private JsonObject retrieveSwaggerSpecification(String kubeToken) throws NotCurrentlyLoggedInException {
+		HttpClient http = HttpClient.newHttpClient();
+		HttpRequest apiSpecReq = HttpRequest.newBuilder()
+				                         .uri(URI.create(format("%s/openapi/v2?timeout=32s", kubeClusterUrl)))
+																 .header("Authorization", format("Bearer %s", kubeToken))
+				                         .build();
 		try {
-			apiSpec = new OpenAPIParser().readLocation("${kubeCluster}/openapi/v2?timeout=32s", Arrays.asList(apiAuth), new ParseOptions());
-		} catch (NullPointerException npe) {
-			throw new NotCurrentlyLoggedInException("Your cached credentials appears to be expired or invalid. Please log in with kubectl or oc and try again.");
+			return JsonbBuilder.newBuilder()
+					       .build()
+					       .fromJson(
+					       		http.send(apiSpecReq, HttpResponse.BodyHandlers.ofString())
+												.body(),
+					          JsonObject.class
+					       );
+		} catch (IOException|InterruptedException e) {
+			throw new NotCurrentlyLoggedInException("Unable to retrieve API details from the cluster. Check to ensure it is reachable and that your login has not timed out.", e);
 		}
-
-		if (apiSpec == null || apiSpec.getOpenAPI() == null || apiSpec.getOpenAPI().getComponents() == null || apiSpec.getOpenAPI().getComponents().getSchemas() == null) {
-			throw new NotCurrentlyLoggedInException("Your cached credentials appears to be expired or invalid. Please log in with kubectl or oc and try again.");
-		}
-		return apiSpec;
 	}
 
-	private String exctractKubeToken(JsonNode kubeConfig) throws NotCurrentlyLoggedInException {
-		Spliterator<JsonNode> users = Spliterators.spliteratorUnknownSize(kubeConfig.get("users").iterator(), Spliterator.ORDERED);
-		Stream<JsonNode> userStream = StreamSupport.stream(users, false);
-		Optional<JsonNode> cachedUser = userStream.filter(n -> n.get("name").asText().endsWith(kubeMaster)).findFirst();
-		if (!cachedUser.isPresent()) {
-			throw new NotCurrentlyLoggedInException(format("There does not appear to be a cached credential token for %s", kubeMaster));
-		}
-		return cachedUser.get().get("user").get("token").asText();
+	private String extractKubeToken(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
+		return kubeConfig
+				.getJsonArray("users")
+				.stream()
+				.filter(u -> u.asJsonObject().getString("name").endsWith(kubeMaster))
+				.findFirst()
+				.orElseThrow(() -> new NotCurrentlyLoggedInException(format("There does not appear to be a cached credential token for %s", kubeMaster)))
+				.asJsonObject().getJsonObject("user").getString("token");
 	}
 
-	private void extractClusterDetails(JsonNode kubeConfig) throws NotCurrentlyLoggedInException {
-		String[] cfg = kubeConfig.get("current-context").asText().split("/");
+	private void extractClusterDetails(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
+		String[] cfg = kubeConfig.getString("current-context").split("/");
 		kubeMaster = cfg[1];
 		LOG.debug("Kube Master: {}", kubeMaster);
 
 		if (kubeClusterUrl == null) {
-			Spliterator<JsonNode> clusters = Spliterators.spliteratorUnknownSize(kubeConfig.get("clusters").iterator(), Spliterator.CONCURRENT);
-			Stream<JsonNode> clusterStream = StreamSupport.stream(clusters, true);
-			Optional<JsonNode> currentCluster = clusterStream.filter(n -> n.get("name").asText().endsWith(kubeMaster)).findFirst();
-			if (!currentCluster.isPresent()) {
-				throw new NotCurrentlyLoggedInException(format("You do not appear to have cached credentials for %s", kubeMaster));
-			}
-			kubeClusterUrl = currentCluster.get().get("cluster").get("server").asText();
+			kubeClusterUrl = kubeConfig.getJsonArray("clusters")
+					.stream()
+					.filter(c -> c.asJsonObject().getString("name").endsWith(kubeMaster))
+					.map(c -> c.asJsonObject())
+					.findFirst()
+					.orElseThrow(() -> new NotCurrentlyLoggedInException(format("You do not appear to have cached credentials for %s", kubeMaster)))
+					.getJsonObject("cluster")
+					.getString("server");
 		}
 
 		if (namespace == null) {
@@ -205,19 +216,14 @@ public class Main implements Callable<Integer> {
 		}
 	}
 
-	JsonNode loadKubeConfig() throws KubeConfigReadException {
+	JsonObject loadKubeConfig() throws KubeConfigReadException {
 		try {
-			InputStream reader = new FileInputStream(kubeConfigFile);
-			return yamlMapper.readValue(reader, JsonNode.class);
+			String inputConfig = Files.readAllLines(kubeConfigFile.toPath()).stream().collect(Collectors.joining("\n"));
+			String jsonConfig = DocConverter.convertYamlToJson(inputConfig);
+			return JsonbBuilder.newBuilder().build().fromJson(jsonConfig, JsonObject.class);
 		} catch(Exception e) {
 			throw new KubeConfigReadException(e);
 		}
-
-	}
-
-	void configYamlParser() {
-		yamlMapper = new ObjectMapper(new YAMLFactory());
-		yamlMapper.findAndRegisterModules();
 	}
 
 	void setVerbosity() {
