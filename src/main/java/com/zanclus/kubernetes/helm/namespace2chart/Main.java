@@ -31,6 +31,7 @@ import static javax.json.JsonValue.EMPTY_JSON_OBJECT;
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
 	public static final String NOT_LOGGED_IN_MESSAGE = "Log in to your cluster using either kubectl or oc and try again";
+	public static final Base64.Decoder DECODER = Base64.getDecoder();
 	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config (~/.kube/config)")
 	File kubeConfigFile = new File(format("%s/.kube/config", getenv("HOME")));
 
@@ -165,6 +166,24 @@ public class Main implements Callable<Integer> {
 		// TODO:
 
 		return null;
+	}
+
+	private JsonObject base64DecodeSecrets(JsonObject secret) {
+		JsonObject encodedValues = Json.createObjectBuilder(secret.getJsonObject("data")).build();
+
+		final JsonObject decodedData = Json
+				.createObjectBuilder(secret)
+				.remove("data")
+				.add("stringData", EMPTY_JSON_OBJECT)
+				.build();
+
+		secret.getJsonObject("data").entrySet().stream()
+				.forEach(e -> decodedData.getJsonObject("stringData").put(
+						e.getKey(),
+						Json.createValue(new String(DECODER.decode(e.getValue().toString()))))
+				);
+
+		return decodedData;
 	}
 
 	/**
