@@ -133,10 +133,14 @@ public class Main implements Callable<Integer> {
 		chart.put("templates", EMPTY_JSON_OBJECT);
 		chart.put("resources", EMPTY_JSON_OBJECT);
 
+		// TODO:
+
 		return chart;
 	}
 
 	/**
+	 * WIP:
+	 * TODO:
 	 * Iteratively request lists of resources for the appropriate resource types and store them in a Map based on the
 	 * type definitions from the API Specification
 	 * @param exportPaths The list of paths from which to retrieve lists of resources
@@ -150,6 +154,27 @@ public class Main implements Callable<Integer> {
 		// TODO:
 
 		return null;
+	}
+
+	/**
+	 * Remove cluster-specific information from retrieved resource objects and return the sanitized result
+	 * @param resource A {@link JsonObject} containing a single Kubernetes resource object
+	 * @return A {@link JsonObject} containing the sanitized Kubernetes resource object
+	 */
+	private JsonObject removeClusterSpecificInfo(JsonObject resource) {
+		// Copy the resource
+		JsonObject sanitized = Json.createObjectBuilder(resource).build();
+
+		sanitized.getJsonObject("metadata").getJsonObject("annotations").remove("kubectl.kubernetes.io/last-applied-configuration");
+		sanitized.getJsonObject("metadata").remove("creationTimestamp");
+		sanitized.getJsonObject("metadata").remove("generation");
+		sanitized.getJsonObject("metadata").remove("namespace");
+		sanitized.getJsonObject("metadata").remove("resourceVersion");
+		sanitized.getJsonObject("metadata").remove("selfLink");
+		sanitized.getJsonObject("metadata").remove("uid");
+		sanitized.replace("status", EMPTY_JSON_OBJECT);
+
+		return sanitized;
 	}
 
 	/**
