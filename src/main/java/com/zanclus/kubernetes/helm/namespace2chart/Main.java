@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
+import javax.json.Json;
 import javax.json.JsonObject;
-import javax.json.bind.Jsonb;
 import javax.json.bind.JsonbBuilder;
 import java.io.*;
 import java.net.URI;
@@ -23,11 +23,10 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 import static java.lang.String.format;
 import static java.lang.System.*;
+import static javax.json.JsonValue.EMPTY_JSON_OBJECT;
 
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
@@ -52,10 +51,6 @@ public class Main implements Callable<Integer> {
 
 	private static final Logger LOG = LoggerFactory.getLogger(Main.class);
 
-
-	private String namespace;
-	private String kubeMaster;
-
 	public static void main(String[] args) {
 		int exitCode = new CommandLine(new Main()).execute(args);
 		exit(exitCode);
@@ -75,8 +70,13 @@ public class Main implements Callable<Integer> {
 			return 1;
 		}
 
+		String namespace;
+		String kubeMaster;
 		try {
-			extractClusterDetails(kubeConfig);
+			JsonObject clusterDetails = extractClusterDetails(kubeConfig);
+			namespace = clusterDetails.getString("namespace");
+			kubeMaster = clusterDetails.getString("kubeMaster");
+
 			LOG.debug("Namespace: {}", namespace);
 			LOG.debug("Kube Master: {}", kubeMaster);
 			LOG.debug("Cluster URL: {}", kubeClusterUrl);
@@ -88,9 +88,11 @@ public class Main implements Callable<Integer> {
 		}
 
 		String kubeToken;
+		JsonObject apiSpec;
 		try {
-			kubeToken = extractKubeToken(kubeConfig);
+			kubeToken = extractKubeToken(kubeMaster, kubeConfig);
 			LOG.debug("Token: {}", kubeToken);
+			apiSpec = retrieveSwaggerSpecification(kubeToken);
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
@@ -98,41 +100,53 @@ public class Main implements Callable<Integer> {
 			return 3;
 		}
 
-		JsonObject apiSpec;
+		JsonObject typeMap = buildTypeMap(apiSpec);
+
+		JsonObject exportPaths = buildExportPathList(apiSpec);
+
+		JsonObject retrievedResources;
 		try {
-			apiSpec = retrieveSwaggerSpecification(kubeToken);
-		} catch(NotCurrentlyLoggedInException e) {
+			retrievedResources = buildResourceMap(namespace, exportPaths, typeMap, kubeToken);
+		} catch(APIAccessException e) {
 			out.println(e.getLocalizedMessage());
-			out.println(NOT_LOGGED_IN_MESSAGE);
 			LOG.error(e.getLocalizedMessage());
 			return 4;
 		}
 
-		Map<String, JsonObject> typeMap = buildTypeMap(apiSpec);
-
-		Map<String, JsonObject> exportPaths = buildExportPathList(apiSpec);
-
-		Map<String, List<JsonObject>> retrievedResources;
-		try {
-			retrievedResources = buildResourceMap(exportPaths, typeMap, kubeToken);
-		} catch(APIAccessException e) {
-			out.println(e.getLocalizedMessage());
-			LOG.error(e.getLocalizedMessage());
-			return 5;
-		}
-
-		List<JsonObject> values = extractValuesForChart(retrievedResources);
+		JsonObject values = extractValuesForChart(namespace, retrievedResources);
 
 		return 0;
 	}
 
-	private List<JsonObject> extractValuesForChart(Map<String, List<JsonObject>> retrievedResources) {
-		// TODO:
+	/**
+	 * WIP:
+	 * TODO:
+	 * For each resource type, compare the instances of that type with each other to find differences
+	 * which should be extracted to the Helm Chart's 'Values.yaml' file
+	 * @param retrievedResources The {@link Map} of resources and their instances
+	 * @return A {@link JsonObject} which contains the values for 'Values.yaml', the newly created templates, and the original resources.
+	 */
+	private JsonObject extractValuesForChart(String namespace, JsonObject retrievedResources) {
+		JsonObject chart = EMPTY_JSON_OBJECT;
+		chart.put("name", Json.createValue(Optional.ofNullable(chartName).orElse(namespace)));
+		chart.put("values", EMPTY_JSON_OBJECT);
+		chart.put("templates", EMPTY_JSON_OBJECT);
+		chart.put("resources", EMPTY_JSON_OBJECT);
 
-		return null;
+		return chart;
 	}
 
-	private Map<String, List<JsonObject>> buildResourceMap(Map<String, JsonObject> exportPaths, Map<String, JsonObject> typeMap, String kubeToken) throws APIAccessException {
+	/**
+	 * Iteratively request lists of resources for the appropriate resource types and store them in a Map based on the
+	 * type definitions from the API Specification
+	 * @param exportPaths The list of paths from which to retrieve lists of resources
+	 * @param typeMap The Map of Types -> schemas
+	 * @param kubeToken The authorization bearer token for communicating with the cluster
+	 * @return A {@link JsonObject} of resource type keys as {@link String} to a {@link javax.json.JsonArray} of
+	 *          resources as {@link JsonObject}s
+	 * @throws APIAccessException If there is an error making requests to the cluster API
+	 */
+	private JsonObject buildResourceMap(String namespace, JsonObject exportPaths, JsonObject typeMap, String kubeToken) throws APIAccessException {
 		// TODO:
 
 		return null;
@@ -141,19 +155,21 @@ public class Main implements Callable<Integer> {
 	/**
 	 * Iterate over the list of Paths from the API spec and filter down to ONLY namespaced path which return lists of resources
 	 * @param apiSpec The {@link JsonObject} containing the Swagger API Spec from the cluster
-	 * @return A {@link Map} of REST endpoint paths as {@link String} to the details about that path and it's methods as {@link JsonObject}
+	 * @return A {@link JsonObject} of REST endpoint paths as {@link String} to the details about that path and it's methods as {@link JsonObject}
 	 */
-	private Map<String, JsonObject> buildExportPathList(JsonObject apiSpec) {
-		return apiSpec.getJsonObject("paths").entrySet().stream()
+	private JsonObject buildExportPathList(JsonObject apiSpec) {
+		return Json.createObjectBuilder(
+			apiSpec.getJsonObject("paths").entrySet().stream()
 				.filter(e -> e.getKey().contains("{namespace}"))
 				.filter(e -> !e.getKey().contains("/watch/"))
 				.filter(e -> !e.getKey().contains("{name}"))
 				.collect(
-						Collectors.toMap(
-								e -> e.getKey(),
-								e -> e.getValue().asJsonObject()
-						)
-				);
+					Collectors.toMap(
+						e -> e.getKey(),
+						e -> e.getValue().asJsonObject()
+					)
+				)
+			).build();
 	}
 
 	/**
@@ -161,14 +177,16 @@ public class Main implements Callable<Integer> {
 	 * @param apiSpec The {@link JsonObject} containing the Swagger API Spec from the cluster
 	 * @return A {@link Map} of Swagger $refs as {@link String} to a type definition as {@link JsonObject}
 	 */
-	private Map<String, JsonObject> buildTypeMap(JsonObject apiSpec) {
-		return apiSpec.getJsonObject("definitions").entrySet().stream()
+	private JsonObject buildTypeMap(JsonObject apiSpec) {
+		return Json.createObjectBuilder(
+			apiSpec.getJsonObject("definitions").entrySet().stream()
 				.collect(
-						Collectors.toMap(
-								e -> format("#/definitions/%s", e.getKey()),
-								e -> e.getValue().asJsonObject()
-						)
-				);
+					Collectors.toMap(
+						e -> format("#/definitions/%s", e.getKey()),
+						e -> e.getValue().asJsonObject()
+					)
+				)
+			).build();
 	}
 
 	/**
@@ -203,7 +221,7 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link String} containing the authorization bearer token
 	 * @throws NotCurrentlyLoggedInException If a corresponding token cannot be found
 	 */
-	private String extractKubeToken(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
+	private String extractKubeToken(String kubeMaster, JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
 		return kubeConfig
 				.getJsonArray("users")
 				.stream()
@@ -216,11 +234,12 @@ public class Main implements Callable<Integer> {
 	/**
 	 * Extract and store the namespace and cluster URL from the locally cached kube configuration file
 	 * @param kubeConfig A {@link JsonObject} containing the parsed contents of a kube config local credentials cache
+	 * @return A {@link JsonObject} containing the namespace and cluster master definitions
 	 * @throws NotCurrentlyLoggedInException If a corresponding cluster URL cannot be found
 	 */
-	private void extractClusterDetails(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
+	private JsonObject extractClusterDetails(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
 		String[] cfg = kubeConfig.getString("current-context").split("/");
-		kubeMaster = cfg[1];
+		String kubeMaster = cfg[1];
 		LOG.debug("Kube Master: {}", kubeMaster);
 
 		if (kubeClusterUrl == null) {
@@ -234,9 +253,9 @@ public class Main implements Callable<Integer> {
 					.getString("server");
 		}
 
-		if (namespace == null) {
-			namespace = cfg[0];
-		}
+		String namespace = Optional.ofNullable(userSelectedNamespace).orElse(cfg[0]);
+
+		return Json.createObjectBuilder().add("namespace", namespace).add("kubeMaster", kubeMaster).build();
 	}
 
 	/**
