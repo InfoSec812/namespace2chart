@@ -49,11 +49,22 @@ public class Main implements Callable<Integer> {
 	@Option(arity = "1", names = {"-n", "--namespace"}, description = "The namespace from which to collect resources to be converted (defaults to the currently selected namespace from ~/.kube/config)")
 	String userSelectedNamespace;
 
+	@Option(names = {"-d", "--decode-secrets"}, description = "If set, this will cause Secrets to have their 'data' fields base64 decoded into 'stringData' fields.")
+	boolean base64DecodeSecretData = false;
+
+	@Option(names = {"-h", "--help"}, usageHelp = true, description = "Output this help message.")
+	boolean showHelp = false;
+
 	private static final Logger LOG = LoggerFactory.getLogger(Main.class);
 
 	public static void main(String[] args) {
-		int exitCode = new CommandLine(new Main()).execute(args);
-		exit(exitCode);
+		Main main = CommandLine.populateCommand(new Main(), args);
+		if (main.showHelp) {
+			CommandLine.usage(main, System.out);
+			return;
+		}
+		int exitCode = new CommandLine(main).execute(args);
+		System.exit(exitCode);
 	}
 
 	public Integer call() throws Exception {
