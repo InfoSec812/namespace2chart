@@ -5,4 +5,8 @@ public class NotCurrentlyLoggedInException extends Throwable {
 	public NotCurrentlyLoggedInException(String message) {
 		super(message);
 	}
+
+	public NotCurrentlyLoggedInException(String message, Throwable t) {
+		super(message, t);
+	}
 }
