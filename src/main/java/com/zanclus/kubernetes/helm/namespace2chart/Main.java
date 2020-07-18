@@ -140,8 +140,8 @@ public class Main implements Callable<Integer> {
 
 	/**
 	 * Iterate over the list of Paths from the API spec and filter down to ONLY namespaced path which return lists of resources
-	 * @param apiSpec
-	 * @return
+	 * @param apiSpec The {@link JsonObject} containing the Swagger API Spec from the cluster
+	 * @return A {@link Map} of REST endpoint paths as {@link String} to the details about that path and it's methods as {@link JsonObject}
 	 */
 	private Map<String, JsonObject> buildExportPathList(JsonObject apiSpec) {
 		return apiSpec.getJsonObject("paths").entrySet().stream()
@@ -156,6 +156,11 @@ public class Main implements Callable<Integer> {
 				);
 	}
 
+	/**
+	 * Retrieves a Map of Swagger definitions $refs to Type definitions
+	 * @param apiSpec The {@link JsonObject} containing the Swagger API Spec from the cluster
+	 * @return A {@link Map} of Swagger $refs as {@link String} to a type definition as {@link JsonObject}
+	 */
 	private Map<String, JsonObject> buildTypeMap(JsonObject apiSpec) {
 		return apiSpec.getJsonObject("definitions").entrySet().stream()
 				.collect(
@@ -166,10 +171,17 @@ public class Main implements Callable<Integer> {
 				);
 	}
 
+	/**
+	 * Use the {@link HttpClient} API and the extracted Kube/OpenShift token to retrieve the Swagger API Specification from the cluster as JSON
+	 * @param kubeToken The extracted authentication bearer token with which to use for authentication to the cluster
+	 * @return A {@link JsonObject} containing the Swagger API Specification for the cluster
+	 * @throws NotCurrentlyLoggedInException If the token does not work or the cluster is unreachable
+	 */
 	private JsonObject retrieveSwaggerSpecification(String kubeToken) throws NotCurrentlyLoggedInException {
 		HttpClient http = HttpClient.newHttpClient();
 		HttpRequest apiSpecReq = HttpRequest.newBuilder()
 				                         .uri(URI.create(format("%s/openapi/v2?timeout=32s", kubeClusterUrl)))
+																 .header("Accept", "application/json")
 																 .header("Authorization", format("Bearer %s", kubeToken))
 				                         .build();
 		try {
@@ -185,6 +197,12 @@ public class Main implements Callable<Integer> {
 		}
 	}
 
+	/**
+	 * Given the kube config read from the filesystem, extract the authentication bearer token for the correct cluster/user
+	 * @param kubeConfig A {@link JsonObject} containing the parsed contents of a kube config local credentials cache
+	 * @return A {@link String} containing the authorization bearer token
+	 * @throws NotCurrentlyLoggedInException If a corresponding token cannot be found
+	 */
 	private String extractKubeToken(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
 		return kubeConfig
 				.getJsonArray("users")
@@ -195,6 +213,11 @@ public class Main implements Callable<Integer> {
 				.asJsonObject().getJsonObject("user").getString("token");
 	}
 
+	/**
+	 * Extract and store the namespace and cluster URL from the locally cached kube configuration file
+	 * @param kubeConfig A {@link JsonObject} containing the parsed contents of a kube config local credentials cache
+	 * @throws NotCurrentlyLoggedInException If a corresponding cluster URL cannot be found
+	 */
 	private void extractClusterDetails(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
 		String[] cfg = kubeConfig.getString("current-context").split("/");
 		kubeMaster = cfg[1];
@@ -216,6 +239,11 @@ public class Main implements Callable<Integer> {
 		}
 	}
 
+	/**
+	 * Load the kube config from '~/.kube/config' or the specified directory and convert it from YAML to JSON
+	 * @return A {@link JsonObject} containing the parsed contents of a kube config local credentials cache
+	 * @throws KubeConfigReadException If the file cannot be found, opened, or parsed
+	 */
 	JsonObject loadKubeConfig() throws KubeConfigReadException {
 		try {
 			String inputConfig = Files.readAllLines(kubeConfigFile.toPath()).stream().collect(Collectors.joining("\n"));
@@ -226,6 +254,9 @@ public class Main implements Callable<Integer> {
 		}
 	}
 
+	/**
+	 * Set the debug log level based on the command-line flags
+	 */
 	void setVerbosity() {
 		switch(verbosity==null?0:verbosity.length) {
 			case 0:
