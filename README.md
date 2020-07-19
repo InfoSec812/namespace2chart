@@ -40,12 +40,11 @@ You will need to have already logged on to your cluster with the command-line to
 
 ```
 Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
-                       [-C=<chartName>] [-n=<userSelectedNamespace>] [-i
+                       [-C=<chartName>] [-n=<overrideCurrentNamespace>] [-i
                        [=<ignoredResourceKinds>...]]...
   -c, --cluster=<kubeClusterUrl>
-                         The URL of the Kubernetes/OpenShift cluster to target
-                           (defaults to currently logged in cluster from ~/.
-                           kube/config)
+                         The URL of the Kubernetes/OpenShift cluster to target.
+                           Parsed from kube config when not set.
   -C, --chart-name=<chartName>
                          The name of the Helm 3 Chart to be created (default to
                            the name of the namespace)
@@ -64,12 +63,11 @@ Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
                            RoleBindingRestriction, Event, EgressNetworkPolicy,
                            PodDisruptionBudget]
   -k, --kube-config[=<kubeConfigFile>]
-                         The file from which to read cached Kube config (~/.
-                           kube/config)
-  -n, --namespace=<userSelectedNamespace>
+                         The file from which to read cached Kube config
+                           Default: /home/dphillips/.kube/config
+  -n, --namespace=<overrideCurrentNamespace>
                          The namespace from which to collect resources to be
-                           converted (defaults to the currently selected
-                           namespace from ~/.kube/config)
+                           converted. Parsed from kube config when not set
   -v, --verbose          Outputs more debugging level information (Can be
                            repeated up to 5 times for max verbosity)
 ```
