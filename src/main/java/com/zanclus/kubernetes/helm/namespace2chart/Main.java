@@ -311,7 +311,6 @@ public class Main implements Callable<Integer> {
 		sanitized.remove("metadata");
 		sanitized.add("metadata", metadata.build());
 		sanitized.remove("status");
-		sanitized.add("status", EMPTY_JSON_OBJECT);
 
 		return sanitized.build();
 	}
