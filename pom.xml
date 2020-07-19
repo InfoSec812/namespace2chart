@@ -7,21 +7,9 @@
   <groupId>com.zanclus.kubernetes</groupId>
   <artifactId>namespace2chart</artifactId>
   <version>0.0.1-SNAPSHOT</version>
-  <packaging>pom</packaging>
-
-  <!-- FIXME change it to the project's website -->
-  <url>http://www.example.com</url>
-
-  <distributionManagement>
-    <site>
-      <id>website</id>
-      <url>scp://webhost.company.com/www/website</url>
-    </site>
-  </distributionManagement>
+  <packaging>jar</packaging>
 
   <properties>
-    <maven.compiler.source>1.8</maven.compiler.source>
-    <maven.compiler.target>1.8</maven.compiler.target>
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <picocli.version>4.0.1</picocli.version>
@@ -29,6 +17,7 @@
     <log4j.version>2.13.3</log4j.version>
     <jackson.version>2.11.0</jackson.version>
     <jakarta.json.version>2.0.0-RC2</jakarta.json.version>
+    <graal.version>20.1.0</graal.version>
   </properties>
 
   <dependencies>
@@ -66,43 +55,70 @@
       <groupId>org.leadpony.joy</groupId>
       <artifactId>joy-yaml</artifactId>
       <version>${jakarta.json.version}</version>
+      <scope>runtime</scope>
     </dependency>
   </dependencies>
 
   <build>
-    <pluginManagement><!-- lock down plugins versions to avoid using Maven defaults (may be moved to parent pom) -->
-      <plugins>
-        <plugin>
-          <artifactId>maven-clean-plugin</artifactId>
-          <version>3.1.0</version>
-        </plugin>
-        <plugin>
-          <artifactId>maven-site-plugin</artifactId>
-          <version>3.7.1</version>
-        </plugin>
-        <plugin>
-          <artifactId>maven-project-info-reports-plugin</artifactId>
-          <version>3.0.0</version>
-        </plugin>
-      </plugins>
-    </pluginManagement>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.1</version>
         <configuration>
-          <source>11</source>
-          <target>11</target>
+          <release>11</release>
         </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifest>
+              <mainClass>com.zanclus.kubernetes.helm.namespace2chart.Main</mainClass>
+            </manifest>
+          </archive>
+          <descriptorRefs>
+            <descriptorRef>jar-with-dependencies</descriptorRef>
+          </descriptorRefs>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>single</goal>
+            </goals>
+            <phase>package</phase>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
 
-  <reporting>
-    <plugins>
-      <plugin>
-        <artifactId>maven-project-info-reports-plugin</artifactId>
-      </plugin>
-    </plugins>
-  </reporting>
+  <profiles>
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>com.oracle.substratevm</groupId>
+            <artifactId>native-image-maven-plugin</artifactId>
+            <version>19.2.1</version>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>native-image</goal>
+                </goals>
+                <phase>package</phase>
+              </execution>
+            </executions>
+            <configuration>
+              <imageName>${project.name}</imageName>
+              <mainClass>com.zanclus.kubernetes.helm.namespace2chart.Main</mainClass>
+              <buildArgs>-H:+ReportUnsupportedElementsAtRuntime --allow-incomplete-classpath</buildArgs>
+              <skip>false</skip>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

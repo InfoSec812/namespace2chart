@@ -20,6 +20,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
@@ -28,7 +29,6 @@ import static java.lang.String.format;
 import static java.lang.System.*;
 import static jakarta.json.JsonValue.EMPTY_JSON_OBJECT;
 import static java.net.http.HttpResponse.BodyHandlers.ofInputStream;
-import static java.net.http.HttpResponse.BodyHandlers.ofString;
 
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
@@ -41,7 +41,7 @@ public class Main implements Callable<Integer> {
 	String kubeClusterUrl = null;
 
 	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored (default: ReplicationController, Pod).")
-	String[] ignoredResourceKinds = new String[]{ "ReplicationController", "Pod" };
+	String[] ignoredResourceKinds = new String[]{ "ReplicationController", "Pod", "Build" };
 
 	@Option(names = {"-v", "--verbose"}, description = "Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)")
 	boolean[] verbosity;
@@ -52,11 +52,11 @@ public class Main implements Callable<Integer> {
 	@Option(arity = "1", names = {"-n", "--namespace"}, description = "The namespace from which to collect resources to be converted (defaults to the currently selected namespace from ~/.kube/config)")
 	String userSelectedNamespace;
 
-	@Option(names = {"-d", "--decode-secrets"}, description = "If set, this will cause Secrets to have their 'data' fields base64 decoded into 'stringData' fields.")
-	boolean base64DecodeSecretData = false;
+	@Option(names = {"-d", "--decode-secrets"}, defaultValue = "false", description = "If set, this will cause Secrets to have their 'data' fields base64 decoded into 'stringData' fields.")
+	boolean base64DecodeSecretData;
 
-	@Option(names = {"-h", "--help"}, usageHelp = true, description = "Output this help message.")
-	boolean showHelp = false;
+	@Option(names = {"-h", "--help"}, defaultValue = "false", usageHelp = true, description = "Output this help message.")
+	boolean showHelp;
 
 	private final Logger LOG;
 
@@ -124,6 +124,7 @@ public class Main implements Callable<Integer> {
 		JsonObject typeMap = buildTypeMap(apiSpec);
 
 		JsonObject exportPaths = buildExportPathList(apiSpec);
+		LOG.debug("Path List: {}", toPrettyJson(exportPaths.keySet().stream().collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build()));
 
 		JsonObject retrievedResources;
 		try {
@@ -187,7 +188,7 @@ public class Main implements Callable<Integer> {
 			URI reqPath = URI.create(requestPath);
 
 			// Extract the $ref for the API Type schema
-			String resourceSchema = path.getValue().asJsonObject().getJsonObject("get").getJsonObject("responses").getJsonObject("200").getJsonObject("schema").getString("$ref");
+			String resourceSchema = path.getValue().asJsonObject().getJsonObject("get").getJsonObject("responses").getJsonObject("200").getJsonObject("schema").getString("$ref").replaceAll("List$", "");
 
 			// Build the HTTP request for each path
 			HttpRequest req = HttpRequest.newBuilder()
@@ -217,13 +218,14 @@ public class Main implements Callable<Integer> {
 					// Check to see if there are actually any resources or if this is an empty List
 					if (listObject.containsKey("items") && !listObject.getJsonArray("items").isEmpty()) {
 
+						boolean isSecret = base64DecodeSecretData && listObject.getString("kind").toLowerCase().startsWith("secret");
 						// Process lists containing items
 						builder.add(
 								resourceSchema,
 								listObject.getJsonArray("items").stream()
 									.map(r -> {
 										// Decode base64 encoded Secret data if requested in command args
-										if (base64DecodeSecretData && listObject.getString("kind").contentEquals("SecretList")) {
+										if (isSecret) {
 											return this.base64DecodeSecrets(r.asJsonObject());
 										}
 										return (JsonObject)r;
@@ -255,19 +257,22 @@ public class Main implements Callable<Integer> {
 	 * @return A Secret as a {@link JsonObject} with the data decoded
 	 */
 	private JsonObject base64DecodeSecrets(JsonObject secret) {
-		final JsonObject decodedData = Json
+		final JsonObjectBuilder decodedData = Json
 				.createObjectBuilder(secret)
-				.remove("data")
-				.add("stringData", EMPTY_JSON_OBJECT)
-				.build();
+				.remove("data");
 
-		secret.getJsonObject("data").entrySet().stream()
-				.forEach(e -> decodedData.getJsonObject("stringData").put(
-						e.getKey(),
-						Json.createValue(new String(DECODER.decode(e.getValue().toString()))))
-				);
+		JsonObject stringData = secret.getJsonObject("data").entrySet().stream()
+				.collect(
+						Json::createObjectBuilder,
+						(acc, item) -> {
+							JsonString val = (JsonString)item.getValue();
+							acc.add(item.getKey(), new String(DECODER.decode(val.getString().getBytes())));
+						},
+						JsonObjectBuilder::addAll).build();
 
-		return decodedData;
+		decodedData.add("stringData", stringData);
+
+		return decodedData.build();
 	}
 
 	/**
@@ -292,7 +297,14 @@ public class Main implements Callable<Integer> {
 		// when the annotations key exists
 		if (resource.getJsonObject("metadata").containsKey("annotations")) {
 			JsonObjectBuilder annotations = Json.createObjectBuilder(resource.getJsonObject("metadata").getJsonObject("annotations"))
-					                                .remove("kubectl.kubernetes.io/last-applied-configuration");
+					                                .remove("kubectl.kubernetes.io/last-applied-configuration")
+					                                .remove("openshift.io/build-config.name")
+					                                .remove("openshift.io/build.number")
+					                                .remove("openshift.io/jenkins-blueocean-log-url")
+					                                .remove("openshift.io/jenkins-build-uri")
+					                                .remove("openshift.io/jenkins-console-log-url")
+					                                .remove("openshift.io/jenkins-log-url")
+					                                .remove("openshift.io/jenkins-status-json");
 			metadata.remove("annotations");
 			metadata.add("annotations", annotations.build());
 		}
@@ -316,6 +328,25 @@ public class Main implements Callable<Integer> {
 				.filter(e -> !e.getKey().contains("/watch/"))
 				.filter(e -> !e.getKey().contains("{name}"))
 				.filter(e -> e.getValue().asJsonObject().containsKey("get"))
+				.filter(e -> {
+					// Filter out ignored resources
+					String ref = e.getValue().asJsonObject()
+							             .getJsonObject("get")
+							             .getJsonObject("responses")
+							             .getJsonObject("200")
+							             .getJsonObject("schema")
+							             .getString("$ref")
+													 .replaceAll("^#/definitions/", "");
+					String kind = apiSpec
+							              .getJsonObject("definitions")
+							              .getJsonObject(ref)
+							              .getJsonArray("x-kubernetes-group-version-kind")
+							              .get(0).asJsonObject()
+							              .getString("kind");
+
+					return Arrays.stream(ignoredResourceKinds)
+							       .noneMatch(i -> i.contentEquals(kind) || i.contentEquals(format("%sList", kind)));
+				})
 				.collect(
 					Collectors.toMap(
 						e -> e.getKey(),
@@ -455,33 +486,33 @@ public class Main implements Callable<Integer> {
 	}
 
 	/**
-	 * Converts a {@link JsonObject} to a minimized {@link String}
-	 * @param obj A {@link JsonObject} to be serialized
+	 * Converts a {@link JsonStructure} to a minimized {@link String}
+	 * @param obj A {@link JsonStructure} to be serialized
 	 * @return A {@link String} representation of the object
 	 */
-	public static final String toJson(JsonObject obj) {
+	public static final String toJson(JsonStructure obj) {
 		StringBuilderWriter sb = new StringBuilderWriter();
 		Map<String, Object> config = new HashMap<>();
 		config.put(JsonGenerator.PRETTY_PRINTING, false);
 		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
 		JsonWriter writer = writerFactory.createWriter(sb);
-		writer.writeObject(obj);
+		writer.write(obj);
 		writer.close();
 		return sb.toString();
 	}
 
 	/**
-	 * Converts a {@link JsonObject} to a pretty printed {@link String}
-	 * @param obj A {@link JsonObject} to be serialized
+	 * Converts a {@link JsonStructure} to a pretty printed {@link String}
+	 * @param obj A {@link JsonStructure} to be serialized
 	 * @return A {@link String} representation of the object
 	 */
-	public static final String toPrettyJson(JsonObject obj) {
+	public static final String toPrettyJson(JsonStructure obj) {
 		StringBuilderWriter sb = new StringBuilderWriter();
 		Map<String, Object> config = new HashMap<>();
 		config.put(JsonGenerator.PRETTY_PRINTING, true);
 		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
 		JsonWriter writer = writerFactory.createWriter(sb);
-		writer.writeObject(obj);
+		writer.write(obj);
 		writer.close();
 		return sb.toString();
 	}
