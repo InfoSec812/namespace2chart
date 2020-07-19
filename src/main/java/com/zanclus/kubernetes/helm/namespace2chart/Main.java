@@ -160,8 +160,6 @@ public class Main implements Callable<Integer> {
 	}
 
 	/**
-	 * WIP:
-	 * TODO:
 	 * Iteratively request lists of resources for the appropriate resource types and store them in a JsonObject based on the
 	 * type definitions from the API Specification. For example, the path '/api/v1/namespaces/{namespace}/configmaps' will
 	 * return a 'List' of zero or more resource objects which should be extracted from the list. Each resource type will
@@ -287,6 +285,7 @@ public class Main implements Callable<Integer> {
 		    .remove("namespace")
 		    .remove("resourceVersion")
 		    .remove("selfLink")
+			  .remove("namespace")
 				.remove("uid");
 
 		// Some resources (e.g. ServiceAccount) do not have annotations. Only perform this operation
@@ -435,6 +434,8 @@ public class Main implements Callable<Integer> {
 
 	/**
 	 * Set the debug log level based on the command-line flags
+	 * @param verbosity a {@code boolean} array whose length indicates the desired verbosity
+	 * @return A {@link Level} compatible with Log4J2 indicatign the Log Level to be set
 	 */
 	static Level computeLogLevel(boolean[] verbosity) {
 		switch(verbosity==null?0:verbosity.length) {
@@ -453,6 +454,11 @@ public class Main implements Callable<Integer> {
 		}
 	}
 
+	/**
+	 * Converts a {@link JsonObject} to a minimized {@link String}
+	 * @param obj A {@link JsonObject} to be serialized
+	 * @return A {@link String} representation of the object
+	 */
 	public static final String toJson(JsonObject obj) {
 		StringBuilderWriter sb = new StringBuilderWriter();
 		Map<String, Object> config = new HashMap<>();
@@ -464,6 +470,11 @@ public class Main implements Callable<Integer> {
 		return sb.toString();
 	}
 
+	/**
+	 * Converts a {@link JsonObject} to a pretty printed {@link String}
+	 * @param obj A {@link JsonObject} to be serialized
+	 * @return A {@link String} representation of the object
+	 */
 	public static final String toPrettyJson(JsonObject obj) {
 		StringBuilderWriter sb = new StringBuilderWriter();
 		Map<String, Object> config = new HashMap<>();
