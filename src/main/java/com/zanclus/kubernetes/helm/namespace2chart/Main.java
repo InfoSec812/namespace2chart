@@ -35,13 +35,13 @@ public class Main implements Callable<Integer> {
 	public static final Base64.Decoder DECODER = Base64.getDecoder();
 
 
-	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config (~/.kube/config)")
+	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config", showDefaultValue = Help.Visibility.ALWAYS)
 	File kubeConfigFile = new File(format("%s/.kube/config", getenv("HOME")));
 
-	@Option(arity="1", names = {"-c", "--cluster"}, description="The URL of the Kubernetes/OpenShift cluster to target (defaults to currently logged in cluster from ~/.kube/config)")
+	@Option(arity="1", names = {"-c", "--cluster"}, description="The URL of the Kubernetes/OpenShift cluster to target. Parsed from kube config when not set.")
 	String kubeClusterUrl = null;
 
-	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored (default: ReplicationController, Pod).")
+	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored", showDefaultValue = Help.Visibility.ALWAYS)
 	String[] ignoredResourceKinds = new String[]{
 			"ReplicationController",
 			"Pod",
@@ -68,8 +68,8 @@ public class Main implements Callable<Integer> {
 	@Option(arity = "1", names = {"-C", "--chart-name"}, description = "The name of the Helm 3 Chart to be created (default to the name of the namespace)")
 	String chartName;
 
-	@Option(arity = "1", names = {"-n", "--namespace"}, description = "The namespace from which to collect resources to be converted (defaults to the currently selected namespace from ~/.kube/config)")
-	String userSelectedNamespace;
+	@Option(arity = "1", names = {"-n", "--namespace"}, description = "The namespace from which to collect resources to be converted. Parsed from kube config when not set")
+	String overrideCurrentNamespace;
 
 	@Option(names = {"-d", "--decode-secrets"}, defaultValue = "false", description = "If set, this will cause Secrets to have their 'data' fields base64 decoded into 'stringData' fields.")
 	boolean base64DecodeSecretData;
@@ -128,6 +128,10 @@ public class Main implements Callable<Integer> {
 			out.println(NOT_LOGGED_IN_MESSAGE);
 			LOG.error(e.getLocalizedMessage(), e);
 			return 2;
+		}
+
+		if (chartName==null) {
+			chartName = namespace;
 		}
 
 		String kubeToken;
@@ -442,7 +446,7 @@ public class Main implements Callable<Integer> {
 					.getString("server");
 		}
 
-		String namespace = Optional.ofNullable(userSelectedNamespace).orElse(cfg[0]);
+		String namespace = Optional.ofNullable(overrideCurrentNamespace).orElse(cfg[0]);
 
 		return Json.createObjectBuilder().add("namespace", namespace).add("kubeMaster", kubeMaster).build();
 	}
