@@ -52,6 +52,11 @@
       <version>${jakarta.json.version}</version>
       <scope>runtime</scope>
     </dependency>
+    <dependency>
+      <groupId>io.github.assimbly</groupId>
+      <artifactId>docconverter</artifactId>
+      <version>1.3.0</version>
+    </dependency>
   </dependencies>
 
   <build>
