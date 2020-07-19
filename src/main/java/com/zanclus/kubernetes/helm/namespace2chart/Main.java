@@ -3,13 +3,9 @@ package com.zanclus.kubernetes.helm.namespace2chart;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.APIAccessException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.KubeConfigReadException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.NotCurrentlyLoggedInException;
-import com.zanclus.kubernetes.helm.namespace2chart.logging.CustomLoggingConfigurator;
 import jakarta.json.*;
 import jakarta.json.stream.JsonGenerator;
 import jakarta.json.stream.JsonParser;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.core.config.Configurator;
-import org.apache.logging.log4j.core.util.StringBuilderWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -20,9 +16,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.logging.Level;
+import java.util.logging.LogManager;
 import java.util.stream.Collectors;
 
 import static java.lang.String.format;
@@ -32,8 +29,12 @@ import static java.net.http.HttpResponse.BodyHandlers.ofInputStream;
 
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
+
 	public static final String NOT_LOGGED_IN_MESSAGE = "Log in to your cluster using either kubectl or oc and try again";
+
 	public static final Base64.Decoder DECODER = Base64.getDecoder();
+
+
 	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config (~/.kube/config)")
 	File kubeConfigFile = new File(format("%s/.kube/config", getenv("HOME")));
 
@@ -41,7 +42,25 @@ public class Main implements Callable<Integer> {
 	String kubeClusterUrl = null;
 
 	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored (default: ReplicationController, Pod).")
-	String[] ignoredResourceKinds = new String[]{ "ReplicationController", "Pod", "Build" };
+	String[] ignoredResourceKinds = new String[]{
+			"ReplicationController",
+			"Pod",
+			"Build",
+			"NetworkPolicy",
+			"DaemonSet",
+			"ReplicaSet",
+			"RoleBindingRestriction",
+			"ImageStreamTag",
+			"ControllerRevision",
+			"StatefulSet",
+			"HorizontalPodAutoscaler",
+			"AppliedClusterResourceQuota",
+			"Endpoints",
+			"RoleBindingRestriction",
+			"Event",
+			"EgressNetworkPolicy",
+			"PodDisruptionBudget"
+	};
 
 	@Option(names = {"-v", "--verbose"}, description = "Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)")
 	boolean[] verbosity;
@@ -58,10 +77,14 @@ public class Main implements Callable<Integer> {
 	@Option(names = {"-h", "--help"}, defaultValue = "false", usageHelp = true, description = "Output this help message.")
 	boolean showHelp;
 
-	private final Logger LOG;
+	private static Logger LOG = null;
 
-	public Main() {
-		CustomLoggingConfigurator.configLogging();
+	static {
+		try {
+			LogManager.getLogManager().readConfiguration(Main.class.getResourceAsStream("/logging.properties"));
+		} catch(IOException ioe) {
+			System.out.println("Unable to configure logging");
+		}
 
 		LOG = LoggerFactory.getLogger(Main.class);
 	}
@@ -77,7 +100,7 @@ public class Main implements Callable<Integer> {
 	}
 
 	public Integer call() throws Exception {
-		Configurator.setRootLevel(computeLogLevel(verbosity));
+		java.util.logging.Logger.getLogger(Main.class.getPackageName()).setLevel(computeLogLevel(verbosity));
 
 		JsonObject kubeConfig;
 		try {
@@ -124,7 +147,7 @@ public class Main implements Callable<Integer> {
 		JsonObject typeMap = buildTypeMap(apiSpec);
 
 		JsonObject exportPaths = buildExportPathList(apiSpec);
-		LOG.debug("Path List: {}", toPrettyJson(exportPaths.keySet().stream().collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build()));
+		LOG.info("Path List: {}", toPrettyJson(exportPaths.keySet().stream().collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build()));
 
 		JsonObject retrievedResources;
 		try {
@@ -327,30 +350,9 @@ public class Main implements Callable<Integer> {
 				.filter(e -> !e.getKey().contains("/watch/"))
 				.filter(e -> !e.getKey().contains("{name}"))
 				.filter(e -> e.getValue().asJsonObject().containsKey("get"))
-				.filter(e -> {
-					// Filter out ignored resources
-					String ref = e.getValue().asJsonObject()
-							             .getJsonObject("get")
-							             .getJsonObject("responses")
-							             .getJsonObject("200")
-							             .getJsonObject("schema")
-							             .getString("$ref")
-													 .replaceAll("^#/definitions/", "");
-					String kind = apiSpec
-							              .getJsonObject("definitions")
-							              .getJsonObject(ref)
-							              .getJsonArray("x-kubernetes-group-version-kind")
-							              .get(0).asJsonObject()
-							              .getString("kind");
-
-					return Arrays.stream(ignoredResourceKinds)
-							       .noneMatch(i -> i.contentEquals(kind) || i.contentEquals(format("%sList", kind)));
-				})
+				.filter(e -> Arrays.stream(ignoredResourceKinds).noneMatch(i -> i.toLowerCase().contentEquals(e.getValue().asJsonObject().getJsonObject("get").getJsonObject("x-kubernetes-group-version-kind").getString("kind").toLowerCase())))
 				.collect(
-					Collectors.toMap(
-						e -> e.getKey(),
-						e -> e.getValue().asJsonObject()
-					)
+					Collectors.toMap(Map.Entry::getKey, e -> e.getValue().asJsonObject())
 				)
 			).build();
 	}
@@ -470,15 +472,19 @@ public class Main implements Callable<Integer> {
 	static Level computeLogLevel(boolean[] verbosity) {
 		switch(verbosity==null?0:verbosity.length) {
 			case 0:
-				return Level.FATAL;
+				return Level.OFF;
 			case 1:
-				return Level.ERROR;
+				return Level.SEVERE;
 			case 2:
-				return Level.WARN;
+				return Level.WARNING;
 			case 3:
 				return Level.INFO;
 			case 4:
-				return Level.DEBUG;
+				return Level.FINE;
+			case 5:
+				return Level.FINER;
+			case 6:
+				return Level.FINEST;
 			default:
 				return Level.ALL;
 		}
@@ -490,14 +496,14 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link String} representation of the object
 	 */
 	public static final String toJson(JsonStructure obj) {
-		StringBuilderWriter sb = new StringBuilderWriter();
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		Map<String, Object> config = new HashMap<>();
 		config.put(JsonGenerator.PRETTY_PRINTING, false);
 		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
-		JsonWriter writer = writerFactory.createWriter(sb);
+		JsonWriter writer = writerFactory.createWriter(baos);
 		writer.write(obj);
 		writer.close();
-		return sb.toString();
+		return new String(baos.toByteArray());
 	}
 
 	/**
@@ -506,13 +512,13 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link String} representation of the object
 	 */
 	public static final String toPrettyJson(JsonStructure obj) {
-		StringBuilderWriter sb = new StringBuilderWriter();
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		Map<String, Object> config = new HashMap<>();
 		config.put(JsonGenerator.PRETTY_PRINTING, true);
 		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
-		JsonWriter writer = writerFactory.createWriter(sb);
+		JsonWriter writer = writerFactory.createWriter(baos);
 		writer.write(obj);
 		writer.close();
-		return sb.toString();
+		return new String(baos.toByteArray());
 	}
 }
