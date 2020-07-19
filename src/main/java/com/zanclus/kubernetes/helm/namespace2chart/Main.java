@@ -4,8 +4,7 @@ import com.zanclus.kubernetes.helm.namespace2chart.exceptions.APIAccessException
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.KubeConfigReadException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.NotCurrentlyLoggedInException;
 import com.zanclus.kubernetes.helm.namespace2chart.logging.CustomLoggingConfigurator;
-import jakarta.json.JsonWriter;
-import jakarta.json.JsonWriterFactory;
+import jakarta.json.*;
 import jakarta.json.stream.JsonGenerator;
 import jakarta.json.stream.JsonParser;
 import org.apache.logging.log4j.Level;
@@ -16,8 +15,6 @@ import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
-import jakarta.json.Json;
-import jakarta.json.JsonObject;
 import java.io.*;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -31,6 +28,7 @@ import static java.lang.String.format;
 import static java.lang.System.*;
 import static jakarta.json.JsonValue.EMPTY_JSON_OBJECT;
 import static java.net.http.HttpResponse.BodyHandlers.ofInputStream;
+import static java.net.http.HttpResponse.BodyHandlers.ofString;
 
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
@@ -130,7 +128,8 @@ public class Main implements Callable<Integer> {
 		JsonObject retrievedResources;
 		try {
 			retrievedResources = buildResourceMap(namespace, exportPaths, typeMap, kubeToken);
-		} catch(APIAccessException e) {
+			LOG.debug("Resources: {}", toPrettyJson(retrievedResources));
+		} catch(APIAccessException|NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			LOG.error(e.getLocalizedMessage(), e);
 			return 4;
@@ -142,7 +141,6 @@ public class Main implements Callable<Integer> {
 	}
 
 	/**
-	 * WIP:
 	 * TODO:
 	 * For each resource type, compare the instances of that type with each other to find differences
 	 * which should be extracted to the Helm Chart's 'Values.yaml' file
@@ -177,10 +175,79 @@ public class Main implements Callable<Integer> {
 	 *          resources as {@link JsonObject}s
 	 * @throws APIAccessException If there is an error making requests to the cluster API
 	 */
-	private JsonObject buildResourceMap(String namespace, JsonObject exportPaths, JsonObject typeMap, String kubeToken) throws APIAccessException {
+	private JsonObject buildResourceMap(String namespace, JsonObject exportPaths, JsonObject typeMap, String kubeToken) throws APIAccessException, NotCurrentlyLoggedInException {
 		// TODO: Use a parallel stream to pull the various different resource types from the cluster
 
-		return null;
+		JsonObjectBuilder builder = Json.createObjectBuilder();
+
+		HttpClient http = HttpClient.newHttpClient();
+
+		// Iterate over list of API endpoints to retrieve from
+		for (Map.Entry<String, JsonValue> path: exportPaths.entrySet()) {
+			LOG.debug("Path Key: {}", path.getKey());
+			String requestPath = format("%s%s", kubeClusterUrl, path.getKey()).replace("{namespace}", namespace);
+			URI reqPath = URI.create(requestPath);
+
+			// Extract the $ref for the API Type schema
+			String resourceSchema = path.getValue().asJsonObject().getJsonObject("get").getJsonObject("responses").getJsonObject("200").getJsonObject("schema").getString("$ref");
+
+			// Build the HTTP request for each path
+			HttpRequest req = HttpRequest.newBuilder()
+														.uri(reqPath)
+														.header("Authorization", format("Bearer %s", kubeToken))
+														.header("Accept", "application/json")
+					                  .build();
+
+			try {
+				// Send the GET request to the API server
+				LOG.debug("Attempting to retrieve '{}' containing '{}'", requestPath, resourceSchema);
+				HttpResponse<InputStream> response = http.send(req, ofInputStream());
+
+				// If a 4XX response is received, throw an exception
+				if (response.statusCode()>=400) {
+					throw new NotCurrentlyLoggedInException("Cluster responded with Unauthorized. Please refresh your login and try again.");
+				}
+
+				// Open the response body as an InputStream, decode the input stream as JSON
+				try (InputStream bodyStream = http.send(req, ofInputStream()).body();
+							JsonParser parser = Json.createParser(bodyStream)) {
+
+					// Get the first (should be only) item
+					parser.next();
+					JsonObject listObject = parser.getObject();
+
+					// Check to see if there are actually any resources or if this is an empty List
+					if (listObject.containsKey("items") && !listObject.getJsonArray("items").isEmpty()) {
+
+						// Process lists containing items
+						builder.add(
+								resourceSchema,
+								listObject.getJsonArray("items").stream()
+									.map(r -> {
+										// Decode base64 encoded Secret data if requested in command args
+										if (base64DecodeSecretData && listObject.getString("kind").contentEquals("SecretList")) {
+											return this.base64DecodeSecrets(r.asJsonObject());
+										}
+										return (JsonObject)r;
+									})
+									.map(r -> {
+										// Apply the group/apiVersion and kind to the items from the list
+										String kind = listObject.getString("kind").replaceAll("List$", "");
+										return Json.createObjectBuilder(r)
+												.add("kind", Json.createValue(kind))
+												.add("kind", Json.createValue(kind))
+												.add("apiVersion", Json.createValue(listObject.getString("apiVersion"))).build();
+									})
+									.map(this::removeClusterSpecificInfo) // Remove certain metadata and status information from each item
+									.collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build());
+					}
+				}
+			} catch(IOException|InterruptedException ioe) {
+				throw new APIAccessException(format("Unable to retrieve path '%s'", path.getKey()), ioe);
+			}
+		}
+
+		return builder.build();
 	}
 
 	/**
@@ -212,18 +279,30 @@ public class Main implements Callable<Integer> {
 	 */
 	private JsonObject removeClusterSpecificInfo(JsonObject resource) {
 		// Copy the resource
-		JsonObject sanitized = Json.createObjectBuilder(resource).build();
+		JsonObjectBuilder sanitized = Json.createObjectBuilder(resource);
 
-		sanitized.getJsonObject("metadata").getJsonObject("annotations").remove("kubectl.kubernetes.io/last-applied-configuration");
-		sanitized.getJsonObject("metadata").remove("creationTimestamp");
-		sanitized.getJsonObject("metadata").remove("generation");
-		sanitized.getJsonObject("metadata").remove("namespace");
-		sanitized.getJsonObject("metadata").remove("resourceVersion");
-		sanitized.getJsonObject("metadata").remove("selfLink");
-		sanitized.getJsonObject("metadata").remove("uid");
-		sanitized.replace("status", EMPTY_JSON_OBJECT);
+		JsonObjectBuilder metadata = Json.createObjectBuilder(resource.getJsonObject("metadata"))
+			  .remove("creationTimestamp")
+		    .remove("generation")
+		    .remove("namespace")
+		    .remove("resourceVersion")
+		    .remove("selfLink")
+				.remove("uid");
 
-		return sanitized;
+		// Some resources (e.g. ServiceAccount) do not have annotations. Only perform this operation
+		// when the annotations key exists
+		if (resource.getJsonObject("metadata").containsKey("annotations")) {
+			JsonObjectBuilder annotations = Json.createObjectBuilder(resource.getJsonObject("metadata").getJsonObject("annotations"))
+					                                .remove("kubectl.kubernetes.io/last-applied-configuration");
+			metadata.remove("annotations");
+			metadata.add("annotations", annotations.build());
+		}
+		sanitized.remove("metadata");
+		sanitized.add("metadata", metadata.build());
+		sanitized.remove("status");
+		sanitized.add("status", EMPTY_JSON_OBJECT);
+
+		return sanitized.build();
 	}
 
 	/**
@@ -237,6 +316,7 @@ public class Main implements Callable<Integer> {
 				.filter(e -> e.getKey().contains("{namespace}"))
 				.filter(e -> !e.getKey().contains("/watch/"))
 				.filter(e -> !e.getKey().contains("{name}"))
+				.filter(e -> e.getValue().asJsonObject().containsKey("get"))
 				.collect(
 					Collectors.toMap(
 						e -> e.getKey(),
