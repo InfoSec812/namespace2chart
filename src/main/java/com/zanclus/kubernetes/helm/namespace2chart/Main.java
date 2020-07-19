@@ -3,30 +3,34 @@ package com.zanclus.kubernetes.helm.namespace2chart;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.APIAccessException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.KubeConfigReadException;
 import com.zanclus.kubernetes.helm.namespace2chart.exceptions.NotCurrentlyLoggedInException;
+import com.zanclus.kubernetes.helm.namespace2chart.logging.CustomLoggingConfigurator;
+import jakarta.json.JsonWriter;
+import jakarta.json.JsonWriterFactory;
+import jakarta.json.stream.JsonGenerator;
+import jakarta.json.stream.JsonParser;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.config.Configurator;
-import org.assimbly.docconverter.DocConverter;
+import org.apache.logging.log4j.core.util.StringBuilderWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
-import javax.json.Json;
-import javax.json.JsonObject;
-import javax.json.bind.JsonbBuilder;
+import jakarta.json.Json;
+import jakarta.json.JsonObject;
 import java.io.*;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
 import static java.lang.String.format;
 import static java.lang.System.*;
-import static javax.json.JsonValue.EMPTY_JSON_OBJECT;
+import static jakarta.json.JsonValue.EMPTY_JSON_OBJECT;
+import static java.net.http.HttpResponse.BodyHandlers.ofInputStream;
 
 @Command(name = "namespace2chart")
 public class Main implements Callable<Integer> {
@@ -56,7 +60,13 @@ public class Main implements Callable<Integer> {
 	@Option(names = {"-h", "--help"}, usageHelp = true, description = "Output this help message.")
 	boolean showHelp = false;
 
-	private static final Logger LOG = LoggerFactory.getLogger(Main.class);
+	private final Logger LOG;
+
+	public Main() {
+		CustomLoggingConfigurator.configLogging();
+
+		LOG = LoggerFactory.getLogger(Main.class);
+	}
 
 	public static void main(String[] args) {
 		Main main = CommandLine.populateCommand(new Main(), args);
@@ -69,16 +79,16 @@ public class Main implements Callable<Integer> {
 	}
 
 	public Integer call() throws Exception {
-		setVerbosity();
+		Configurator.setRootLevel(computeLogLevel(verbosity));
 
 		JsonObject kubeConfig;
 		try {
 			kubeConfig = loadKubeConfig();
 			if (LOG.isDebugEnabled()) {
-				LOG.debug(kubeConfig.toString());
+				LOG.debug(toPrettyJson(kubeConfig));
 			}
 		} catch(KubeConfigReadException e) {
-			LOG.error(e.getLocalizedMessage());
+			LOG.error(e.getLocalizedMessage(), e);
 			return 1;
 		}
 
@@ -95,7 +105,7 @@ public class Main implements Callable<Integer> {
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
-			LOG.error(e.getLocalizedMessage());
+			LOG.error(e.getLocalizedMessage(), e);
 			return 2;
 		}
 
@@ -105,10 +115,11 @@ public class Main implements Callable<Integer> {
 			kubeToken = extractKubeToken(kubeMaster, kubeConfig);
 			LOG.debug("Token: {}", kubeToken);
 			apiSpec = retrieveSwaggerSpecification(kubeToken);
+			LOG.debug("Swagger Spec: {}", toPrettyJson(apiSpec));
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
-			LOG.error(e.getLocalizedMessage());
+			LOG.error(e.getLocalizedMessage(), e);
 			return 3;
 		}
 
@@ -121,7 +132,7 @@ public class Main implements Callable<Integer> {
 			retrievedResources = buildResourceMap(namespace, exportPaths, typeMap, kubeToken);
 		} catch(APIAccessException e) {
 			out.println(e.getLocalizedMessage());
-			LOG.error(e.getLocalizedMessage());
+			LOG.error(e.getLocalizedMessage(), e);
 			return 4;
 		}
 
@@ -135,17 +146,17 @@ public class Main implements Callable<Integer> {
 	 * TODO:
 	 * For each resource type, compare the instances of that type with each other to find differences
 	 * which should be extracted to the Helm Chart's 'Values.yaml' file
-	 * @param retrievedResources The {@link Map} of resources and their instances
+	 * @param retrievedResources The {@link JsonObject} of resources and their instances
 	 * @return A {@link JsonObject} which contains the values for 'Values.yaml', the newly created templates, and the original resources.
 	 */
 	private JsonObject extractValuesForChart(String namespace, JsonObject retrievedResources) {
-		JsonObject chart = EMPTY_JSON_OBJECT;
-		chart.put("name", Json.createValue(Optional.ofNullable(chartName).orElse(namespace)));
-		chart.put("values", EMPTY_JSON_OBJECT);
-		chart.put("templates", EMPTY_JSON_OBJECT);
-		chart.put("resources", EMPTY_JSON_OBJECT);
+		JsonObject chart = Json.createObjectBuilder()
+			.add("name", Json.createValue(Optional.ofNullable(chartName).orElse(namespace)))
+			.add("values", EMPTY_JSON_OBJECT)
+			.add("templates", EMPTY_JSON_OBJECT)
+			.add("resources", EMPTY_JSON_OBJECT).build();
 
-		// TODO:
+		// TODO: Investigate using JSONPatch or JSONDiff to extract differences
 
 		return chart;
 	}
@@ -153,24 +164,32 @@ public class Main implements Callable<Integer> {
 	/**
 	 * WIP:
 	 * TODO:
-	 * Iteratively request lists of resources for the appropriate resource types and store them in a Map based on the
-	 * type definitions from the API Specification
+	 * Iteratively request lists of resources for the appropriate resource types and store them in a JsonObject based on the
+	 * type definitions from the API Specification. For example, the path '/api/v1/namespaces/{namespace}/configmaps' will
+	 * return a 'List' of zero or more resource objects which should be extracted from the list. Each resource type will
+	 * have a key in the resulting JsonObject, and for each key there will be a JsonArray of resource objects. The key
+	 * should be the $ref to the type definition from the Swagger Schema (e.g. 'io.k8s.api.core.v1.ConfigMap')
+	 *
 	 * @param exportPaths The list of paths from which to retrieve lists of resources
 	 * @param typeMap The Map of Types -> schemas
 	 * @param kubeToken The authorization bearer token for communicating with the cluster
-	 * @return A {@link JsonObject} of resource type keys as {@link String} to a {@link javax.json.JsonArray} of
+	 * @return A {@link JsonObject} of resource type keys as {@link String} to a {@link jakarta.json.JsonArray} of
 	 *          resources as {@link JsonObject}s
 	 * @throws APIAccessException If there is an error making requests to the cluster API
 	 */
 	private JsonObject buildResourceMap(String namespace, JsonObject exportPaths, JsonObject typeMap, String kubeToken) throws APIAccessException {
-		// TODO:
+		// TODO: Use a parallel stream to pull the various different resource types from the cluster
 
 		return null;
 	}
 
+	/**
+	 * Extract and decode base64 content in Secrets, remove the encoded data from the resource, then add the decoded
+	 * data to the {@code stringData} field instead.
+	 * @param secret A OpenShift/Kubernetes Secret in the form of a {@link JsonObject}
+	 * @return A Secret as a {@link JsonObject} with the data decoded
+	 */
 	private JsonObject base64DecodeSecrets(JsonObject secret) {
-		JsonObject encodedValues = Json.createObjectBuilder(secret.getJsonObject("data")).build();
-
 		final JsonObject decodedData = Json
 				.createObjectBuilder(secret)
 				.remove("data")
@@ -257,16 +276,20 @@ public class Main implements Callable<Integer> {
 																 .header("Accept", "application/json")
 																 .header("Authorization", format("Bearer %s", kubeToken))
 				                         .build();
+
 		try {
-			return JsonbBuilder.newBuilder()
-					       .build()
-					       .fromJson(
-					       		http.send(apiSpecReq, HttpResponse.BodyHandlers.ofString())
-												.body(),
-					          JsonObject.class
-					       );
+			HttpResponse<InputStream> response = http.send(apiSpecReq, ofInputStream());
+			if (response.statusCode() >= 401) {
+				throw new NotCurrentlyLoggedInException("Cluster responded with Unauthorized. Please refresh your login and try again.");
+			}
+			try (JsonParser parser = Json.createParser(response.body())) {
+				parser.next();
+				return parser.getObject();
+			}
 		} catch (IOException|InterruptedException e) {
 			throw new NotCurrentlyLoggedInException("Unable to retrieve API details from the cluster. Check to ensure it is reachable and that your login has not timed out.", e);
+		} catch (NotCurrentlyLoggedInException nclie) {
+			throw nclie;
 		}
 	}
 
@@ -320,9 +343,11 @@ public class Main implements Callable<Integer> {
 	 */
 	JsonObject loadKubeConfig() throws KubeConfigReadException {
 		try {
-			String inputConfig = Files.readAllLines(kubeConfigFile.toPath()).stream().collect(Collectors.joining("\n"));
-			String jsonConfig = DocConverter.convertYamlToJson(inputConfig);
-			return JsonbBuilder.newBuilder().build().fromJson(jsonConfig, JsonObject.class);
+			FileReader reader = new FileReader(kubeConfigFile);
+			try (JsonParser jsonAndYamlParser = Json.createParser(reader)) {
+				jsonAndYamlParser.next();
+				return jsonAndYamlParser.getObject();
+			}
 		} catch(Exception e) {
 			throw new KubeConfigReadException(e);
 		}
@@ -331,25 +356,42 @@ public class Main implements Callable<Integer> {
 	/**
 	 * Set the debug log level based on the command-line flags
 	 */
-	void setVerbosity() {
+	static Level computeLogLevel(boolean[] verbosity) {
 		switch(verbosity==null?0:verbosity.length) {
 			case 0:
-		    Configurator.setRootLevel(Level.FATAL);
-		    break;
-		  case 1:
-		    Configurator.setRootLevel(Level.ERROR);
-		    break;
-		  case 2:
-		    Configurator.setRootLevel(Level.WARN);
-		    break;
-		  case 3:
-		    Configurator.setRootLevel(Level.INFO);
-		    break;
-		  case 4:
-		    Configurator.setRootLevel(Level.DEBUG);
-		    break;
-		  default:
-		    Configurator.setRootLevel(Level.ALL);
+				return Level.FATAL;
+			case 1:
+				return Level.ERROR;
+			case 2:
+				return Level.WARN;
+			case 3:
+				return Level.INFO;
+			case 4:
+				return Level.DEBUG;
+			default:
+				return Level.ALL;
 		}
+	}
+
+	public static final String toJson(JsonObject obj) {
+		StringBuilderWriter sb = new StringBuilderWriter();
+		Map<String, Object> config = new HashMap<>();
+		config.put(JsonGenerator.PRETTY_PRINTING, false);
+		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
+		JsonWriter writer = writerFactory.createWriter(sb);
+		writer.writeObject(obj);
+		writer.close();
+		return sb.toString();
+	}
+
+	public static final String toPrettyJson(JsonObject obj) {
+		StringBuilderWriter sb = new StringBuilderWriter();
+		Map<String, Object> config = new HashMap<>();
+		config.put(JsonGenerator.PRETTY_PRINTING, true);
+		JsonWriterFactory writerFactory = Json.createWriterFactory(config);
+		JsonWriter writer = writerFactory.createWriter(sb);
+		writer.writeObject(obj);
+		writer.close();
+		return sb.toString();
 	}
 }
