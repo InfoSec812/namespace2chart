@@ -6,6 +6,7 @@ import com.zanclus.kubernetes.helm.namespace2chart.exceptions.NotCurrentlyLogged
 import jakarta.json.*;
 import jakarta.json.stream.JsonGenerator;
 import jakarta.json.stream.JsonParser;
+import org.assimbly.docconverter.DocConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -42,7 +43,7 @@ public class Main implements Callable<Integer> {
 	String kubeClusterUrl = null;
 
 	@Option(arity = "0..*", names = {"-i", "--ignored"}, description="The Kubernetes/OpenShift resource types which should be ignored", showDefaultValue = Help.Visibility.ALWAYS)
-	String[] ignoredResourceKinds = new String[]{
+	String[] ignoredResourceKinds = new String[] {
 			"ReplicationController",
 			"Pod",
 			"Build",
@@ -105,8 +106,8 @@ public class Main implements Callable<Integer> {
 		JsonObject kubeConfig;
 		try {
 			kubeConfig = loadKubeConfig();
-			if (LOG.isDebugEnabled()) {
-				LOG.debug(toPrettyJson(kubeConfig));
+			if (LOG.isTraceEnabled()) {
+				LOG.trace(toPrettyJson(kubeConfig));
 			}
 		} catch(KubeConfigReadException e) {
 			LOG.error(e.getLocalizedMessage(), e);
@@ -120,9 +121,9 @@ public class Main implements Callable<Integer> {
 			namespace = clusterDetails.getString("namespace");
 			kubeMaster = clusterDetails.getString("kubeMaster");
 
-			LOG.debug("Namespace: {}", namespace);
-			LOG.debug("Kube Master: {}", kubeMaster);
-			LOG.debug("Cluster URL: {}", kubeClusterUrl);
+			LOG.trace("Namespace: {}", namespace);
+			LOG.trace("Kube Master: {}", kubeMaster);
+			LOG.trace("Cluster URL: {}", kubeClusterUrl);
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
@@ -130,17 +131,13 @@ public class Main implements Callable<Integer> {
 			return 2;
 		}
 
-		if (chartName==null) {
-			chartName = namespace;
-		}
-
 		String kubeToken;
 		JsonObject apiSpec;
 		try {
 			kubeToken = extractKubeToken(kubeMaster, kubeConfig);
-			LOG.debug("Token: {}", kubeToken);
+			LOG.trace("Token: {}", kubeToken);
 			apiSpec = retrieveSwaggerSpecification(kubeToken);
-			LOG.debug("Swagger Spec: {}", toPrettyJson(apiSpec));
+			LOG.trace("Swagger Spec: {}", toPrettyJson(apiSpec));
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
@@ -156,14 +153,15 @@ public class Main implements Callable<Integer> {
 		JsonObject retrievedResources;
 		try {
 			retrievedResources = buildResourceMap(namespace, exportPaths, typeMap, kubeToken);
-			LOG.debug("Resources: {}", toPrettyJson(retrievedResources));
+			LOG.trace("Resources: {}", toPrettyJson(retrievedResources));
 		} catch(APIAccessException|NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			LOG.error(e.getLocalizedMessage(), e);
 			return 4;
 		}
 
-		JsonObject values = extractValuesForChart(namespace, retrievedResources);
+		JsonObject chartData = extractValuesForChart(namespace, retrievedResources);
+		LOG.trace("Chart Data: {}", toPrettyJson(chartData));
 
 		return 0;
 	}
@@ -176,15 +174,34 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link JsonObject} which contains the values for 'Values.yaml', the newly created templates, and the original resources.
 	 */
 	private JsonObject extractValuesForChart(String namespace, JsonObject retrievedResources) {
-		JsonObject chart = Json.createObjectBuilder()
-			.add("name", Json.createValue(Optional.ofNullable(chartName).orElse(namespace)))
-			.add("values", EMPTY_JSON_OBJECT)
-			.add("templates", EMPTY_JSON_OBJECT)
-			.add("resources", EMPTY_JSON_OBJECT).build();
+		JsonObjectBuilder chart = Json.createObjectBuilder()
+			.add("name", Json.createValue(Optional.ofNullable(chartName).orElse(namespace)));  // Use specified chart name or default to current namespace
+
+		JsonObjectBuilder templates = Json.createObjectBuilder();
+		retrievedResources.entrySet().stream()
+				.forEach(resourceType -> {
+					String kind = resourceType.getValue().asJsonArray().get(0).asJsonObject().getString("kind");
+					if (resourceType.getValue().asJsonArray().size() == 1) {
+						try {
+							templates.add(kind, Main.toYaml(resourceType.getValue().asJsonArray().get(0).asJsonObject()));
+						} catch(Exception e) {
+							LOG.error("Unable to convert resource document of type '{}' to YAML", kind, e);
+						}
+					} else {
+						JsonObject first = resourceType.getValue().asJsonArray().get(0).asJsonObject();
+						JsonPatchBuilder patchBuilder = Json.createPatchBuilder();
+						for (int i=1; i<resourceType.getValue().asJsonArray().size(); i++) {
+							JsonObject current = resourceType.getValue().asJsonArray().get(i).asJsonObject();
+							JsonPatch diff = Json.createDiff(first, current);
+							LOG.debug("Patch for '{}:{}': {}", kind, current.getJsonObject("metadata").getString("name"), toPrettyJson(diff.toJsonArray()));
+						}
+					}
+				});
+		chart.add("templates", templates.build());
 
 		// TODO: Investigate using JSONPatch or JSONDiff to extract differences
 
-		return chart;
+		return chart.build();
 	}
 
 	/**
@@ -208,9 +225,10 @@ public class Main implements Callable<Integer> {
 
 		HttpClient http = HttpClient.newHttpClient();
 
+		// TODO: Convert to parallel stream for faster completion?
 		// Iterate over list of API endpoints to retrieve from
 		for (Map.Entry<String, JsonValue> path: exportPaths.entrySet()) {
-			LOG.debug("Path Key: {}", path.getKey());
+			LOG.trace("Path Key: {}", path.getKey());
 			String requestPath = format("%s%s", kubeClusterUrl, path.getKey()).replace("{namespace}", namespace);
 			URI reqPath = URI.create(requestPath);
 
@@ -226,7 +244,7 @@ public class Main implements Callable<Integer> {
 
 			try {
 				// Send the GET request to the API server
-				LOG.debug("Attempting to retrieve '{}' containing '{}'", requestPath, resourceSchema);
+				LOG.trace("Attempting to retrieve '{}' containing '{}'", requestPath, resourceSchema);
 				HttpResponse<InputStream> response = http.send(req, ofInputStream());
 
 				// If a 4XX response is received, throw an exception
@@ -433,7 +451,7 @@ public class Main implements Callable<Integer> {
 	private JsonObject extractClusterDetails(JsonObject kubeConfig) throws NotCurrentlyLoggedInException {
 		String[] cfg = kubeConfig.getString("current-context").split("/");
 		String kubeMaster = cfg[1];
-		LOG.debug("Kube Master: {}", kubeMaster);
+		LOG.trace("Kube Master: {}", kubeMaster);
 
 		if (kubeClusterUrl == null) {
 			kubeClusterUrl = kubeConfig.getJsonArray("clusters")
@@ -524,5 +542,15 @@ public class Main implements Callable<Integer> {
 		writer.write(obj);
 		writer.close();
 		return new String(baos.toByteArray());
+	}
+
+	/**
+	 * Convert a JSON String into a YAML String
+	 * @param obj The {@link JsonStructure} object to be convertied to YAML
+	 * @return A {@link String} containing a YAML Representation of the input
+	 * @throws Exception If there is an error transforming the JSON to YAML
+	 */
+	public static final String toYaml(JsonStructure obj) throws Exception {
+		return DocConverter.convertJsonToYaml(toJson(obj));
 	}
 }
