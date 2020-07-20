@@ -41,7 +41,8 @@ mvn -Pnative package        ## For GraalVM Native Image
 You will need to have already logged on to your cluster with the command-line tool (e.g. `oc` or `kubectl`).
 
 ```
-Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
+Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-r[=<rulesFile>]] [-S
+                       [=<allowInsecureSsl>]] [-c=<kubeClusterUrl>]
                        [-C=<chartName>] [-n=<overrideCurrentNamespace>] [-i
                        [=<ignoredResourceKinds>...]]...
   -c, --cluster=<kubeClusterUrl>
@@ -57,9 +58,8 @@ Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
                          The Kubernetes/OpenShift resource types which should
                            be ignored
                            Default: [ReplicationController, Pod, Build,
-                           NetworkPolicy, DaemonSet, ReplicaSet,
-                           RoleBindingRestriction, ImageStreamTag,
-                           ControllerRevision, StatefulSet,
+                           NetworkPolicy, RoleBindingRestriction,
+                           ImageStreamTag, ControllerRevision,
                            HorizontalPodAutoscaler,
                            AppliedClusterResourceQuota, Endpoints,
                            RoleBindingRestriction, Event, EgressNetworkPolicy,
@@ -70,6 +70,14 @@ Usage: namespace2chart [-dhv] [-k[=<kubeConfigFile>]] [-c=<kubeClusterUrl>]
   -n, --namespace=<overrideCurrentNamespace>
                          The namespace from which to collect resources to be
                            converted. Parsed from kube config when not set
+  -r, --override-rules[=<rulesFile>]
+                         Specify a JSON rules file which will override the
+                           built-in default clean-up rules for which fields
+                           will be deleted from exported resources
+  -S, --insecure-ssl[=<allowInsecureSsl>]
+                         Allow self-signed, expired, and non-matching SSL
+                           certificates
+                           Default: false
   -v, --verbose          Outputs more debugging level information (Can be
                            repeated up to 5 times for max verbosity)
 ```
