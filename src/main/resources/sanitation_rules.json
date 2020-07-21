@@ -1,0 +1,33 @@
+{
+  "global": {
+    "paths": [
+      { "$.metadata.annotations.'kubectl.kubernetes.io/last-applied-configuration'": null },
+      { "$.metadata.creationTimestamp": null },
+      { "$.metadata.namespace": null },
+      { "$.metadata.resourceVersion": null },
+      { "$.metadata.selfLink": null },
+      { "$.metadata.uid": null },
+      { "$.status": null }
+    ]
+  },
+  "apiVersionsAndGroups": {
+    "v1": {
+      "kinds": {
+        "Service": {
+          "paths": [
+            { "$.spec.clusterIP": null }
+          ]
+        }
+      }
+    },
+    "apps.openshift.io/v1": {
+      "kinds": {
+        "DeploymentConfig": {
+          "paths": [
+            { "$.spec.triggers[].imageChangeParams.lastTriggeredImage": "" }
+          ]
+        }
+      }
+    }
+  }
+}

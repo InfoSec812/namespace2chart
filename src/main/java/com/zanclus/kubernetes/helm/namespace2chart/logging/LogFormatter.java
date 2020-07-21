@@ -31,8 +31,8 @@ public class LogFormatter extends Formatter {
 			return Arrays.stream(t.getStackTrace())
 					       .map(e -> String.format("%s:%s", e.getClassName(), e.getMethodName()))
 					       .collect(
-							       () -> new StringBuilder("\b"),
-							       (acc, item) -> acc.append(item),
+							       () -> new StringBuilder(),
+							       (acc, item) -> acc.append(String.format("\t%s\n", item)),
 							       (acc, accPrime) -> acc.append(accPrime.toString())
 					       ).toString();
 		}

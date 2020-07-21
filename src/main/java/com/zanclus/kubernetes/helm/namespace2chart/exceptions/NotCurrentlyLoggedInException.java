@@ -1,6 +1,6 @@
 package com.zanclus.kubernetes.helm.namespace2chart.exceptions;
 
-public class NotCurrentlyLoggedInException extends Throwable {
+public class NotCurrentlyLoggedInException extends RuntimeException {
 
 	public NotCurrentlyLoggedInException(String message) {
 		super(message);

@@ -12,11 +12,20 @@ import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.io.*;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
@@ -35,6 +44,13 @@ public class Main implements Callable<Integer> {
 
 	public static final Base64.Decoder DECODER = Base64.getDecoder();
 
+	private SSLContext sslContext;
+
+	@Option(arity = "0..1", names = {"-r", "--override-rules"}, description = "Specify a JSON rules file which will override the built-in default clean-up rules for which fields will be deleted from exported resources")
+	File rulesFile;
+
+	@Option(arity = "0..1", names = {"-S", "--insecure-ssl"}, description = "Allow self-signed, expired, and non-matching SSL certificates", defaultValue = "false", showDefaultValue = Help.Visibility.ALWAYS)
+	boolean allowInsecureSsl;
 
 	@Option(arity = "0..1", names = {"-k", "--kube-config"}, description = "The file from which to read cached Kube config", showDefaultValue = Help.Visibility.ALWAYS)
 	File kubeConfigFile = new File(format("%s/.kube/config", getenv("HOME")));
@@ -48,12 +64,9 @@ public class Main implements Callable<Integer> {
 			"Pod",
 			"Build",
 			"NetworkPolicy",
-			"DaemonSet",
-			"ReplicaSet",
 			"RoleBindingRestriction",
 			"ImageStreamTag",
 			"ControllerRevision",
-			"StatefulSet",
 			"HorizontalPodAutoscaler",
 			"AppliedClusterResourceQuota",
 			"Endpoints",
@@ -103,6 +116,12 @@ public class Main implements Callable<Integer> {
 	public Integer call() throws Exception {
 		java.util.logging.Logger.getLogger(Main.class.getPackageName()).setLevel(computeLogLevel(verbosity));
 
+		if (allowInsecureSsl) {
+			setInsecureSslTrustManager();
+		} else {
+			this.sslContext = SSLContext.getDefault();
+		}
+
 		JsonObject kubeConfig;
 		try {
 			kubeConfig = loadKubeConfig();
@@ -121,9 +140,9 @@ public class Main implements Callable<Integer> {
 			namespace = clusterDetails.getString("namespace");
 			kubeMaster = clusterDetails.getString("kubeMaster");
 
-			LOG.trace("Namespace: {}", namespace);
-			LOG.trace("Kube Master: {}", kubeMaster);
-			LOG.trace("Cluster URL: {}", kubeClusterUrl);
+			LOG.debug("Namespace: {}", namespace);
+			LOG.debug("Kube Master: {}", kubeMaster);
+			LOG.debug("Cluster URL: {}", kubeClusterUrl);
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
@@ -135,14 +154,18 @@ public class Main implements Callable<Integer> {
 		JsonObject apiSpec;
 		try {
 			kubeToken = extractKubeToken(kubeMaster, kubeConfig);
-			LOG.trace("Token: {}", kubeToken);
+			LOG.debug("Token: {}", kubeToken);
 			apiSpec = retrieveSwaggerSpecification(kubeToken);
-			LOG.trace("Swagger Spec: {}", toPrettyJson(apiSpec));
+			LOG.debug("Swagger Spec: {}", toPrettyJson(apiSpec));
 		} catch(NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			out.println(NOT_LOGGED_IN_MESSAGE);
 			LOG.error(e.getLocalizedMessage(), e);
 			return 3;
+		} catch (SecurityException se) {
+			out.println("Security Exception communicating with cluster.");
+			LOG.error(se.getLocalizedMessage(), se);
+			return 4;
 		}
 
 		JsonObject typeMap = buildTypeMap(apiSpec);
@@ -157,13 +180,38 @@ public class Main implements Callable<Integer> {
 		} catch(APIAccessException|NotCurrentlyLoggedInException e) {
 			out.println(e.getLocalizedMessage());
 			LOG.error(e.getLocalizedMessage(), e);
-			return 4;
+			return 5;
 		}
 
 		JsonObject chartData = extractValuesForChart(namespace, retrievedResources);
 		LOG.trace("Chart Data: {}", toPrettyJson(chartData));
 
 		return 0;
+	}
+
+	private void setInsecureSslTrustManager() throws NoSuchAlgorithmException, KeyManagementException {
+		var trustAllCerts = new TrustManager[] {
+				new X509TrustManager() {
+					@Override
+					public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+
+					}
+
+					@Override
+					public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+
+					}
+
+					@Override
+					public X509Certificate[] getAcceptedIssuers() {
+						return new X509Certificate[0];
+					}
+				}
+		};
+
+		sslContext = SSLContext.getInstance("TLS");
+		sslContext.init(null, trustAllCerts, new SecureRandom());
+		System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
 	}
 
 	/**
@@ -189,7 +237,6 @@ public class Main implements Callable<Integer> {
 						}
 					} else {
 						JsonObject first = resourceType.getValue().asJsonArray().get(0).asJsonObject();
-						JsonPatchBuilder patchBuilder = Json.createPatchBuilder();
 						for (int i=1; i<resourceType.getValue().asJsonArray().size(); i++) {
 							JsonObject current = resourceType.getValue().asJsonArray().get(i).asJsonObject();
 							JsonPatch diff = Json.createDiff(first, current);
@@ -223,13 +270,13 @@ public class Main implements Callable<Integer> {
 
 		JsonObjectBuilder builder = Json.createObjectBuilder();
 
-		HttpClient http = HttpClient.newHttpClient();
+		HttpClient http = getHttpClient();
 
 		// TODO: Convert to parallel stream for faster completion?
 		// Iterate over list of API endpoints to retrieve from
 		for (Map.Entry<String, JsonValue> path: exportPaths.entrySet()) {
 			LOG.trace("Path Key: {}", path.getKey());
-			String requestPath = format("%s%s", kubeClusterUrl, path.getKey()).replace("{namespace}", namespace);
+			String requestPath = format("%s%s?exact=false&export=true", kubeClusterUrl, path.getKey()).replace("{namespace}", namespace);
 			URI reqPath = URI.create(requestPath);
 
 			// Extract the $ref for the API Type schema
@@ -237,62 +284,81 @@ public class Main implements Callable<Integer> {
 
 			// Build the HTTP request for each path
 			HttpRequest req = HttpRequest.newBuilder()
-														.uri(reqPath)
-														.header("Authorization", format("Bearer %s", kubeToken))
-														.header("Accept", "application/json")
+					                  .uri(reqPath)
+					                  .header("Authorization", format("Bearer %s", kubeToken))
+					                  .header("Accept", "application/json")
 					                  .build();
 
 			try {
 				// Send the GET request to the API server
-				LOG.trace("Attempting to retrieve '{}' containing '{}'", requestPath, resourceSchema);
+				LOG.info("Attempting to retrieve '{}' containing '{}'", requestPath, resourceSchema);
 				HttpResponse<InputStream> response = http.send(req, ofInputStream());
 
 				// If a 4XX response is received, throw an exception
-				if (response.statusCode()>=400) {
-					throw new NotCurrentlyLoggedInException("Cluster responded with Unauthorized. Please refresh your login and try again.");
-				}
+				if (response.statusCode() >= 400) {
+					LOG.warn("Received 'Unauthorized' for '{}'", path.getValue().asJsonObject().getJsonObject("get").getJsonObject("responses").getJsonObject("200").getJsonObject("x-kubernetes-"));
+				} else {
 
-				// Open the response body as an InputStream, decode the input stream as JSON
-				try (InputStream bodyStream = http.send(req, ofInputStream()).body();
-							JsonParser parser = Json.createParser(bodyStream)) {
+					// Open the response body as an InputStream, decode the input stream as JSON
+					try (InputStream bodyStream = http.send(req, ofInputStream()).body();
+					     JsonParser parser = Json.createParser(bodyStream)) {
 
-					// Get the first (should be only) item
-					parser.next();
-					JsonObject listObject = parser.getObject();
+						// Get the first (should be only) item
+						parser.next();
+						JsonObject listObject = parser.getObject();
 
-					// Check to see if there are actually any resources or if this is an empty List
-					if (listObject.containsKey("items") && !listObject.getJsonArray("items").isEmpty()) {
+						// Check to see if there are actually any resources or if this is an empty List
+						if (listObject.containsKey("items") && !listObject.getJsonArray("items").isEmpty()) {
 
-						boolean isSecret = base64DecodeSecretData && listObject.getString("kind").toLowerCase().startsWith("secret");
-						// Process lists containing items
-						builder.add(
-								resourceSchema,
-								listObject.getJsonArray("items").stream()
-									.map(r -> {
-										// Decode base64 encoded Secret data if requested in command args
-										if (isSecret) {
-											return this.base64DecodeSecrets(r.asJsonObject());
-										}
-										return (JsonObject)r;
-									})
-									.map(r -> {
-										// Apply the group/apiVersion and kind to the items from the list
-										String kind = listObject.getString("kind").replaceAll("List$", "");
-										return Json.createObjectBuilder(r)
-												.add("kind", Json.createValue(kind))
-												.add("kind", Json.createValue(kind))
-												.add("apiVersion", Json.createValue(listObject.getString("apiVersion"))).build();
-									})
-									.map(this::removeClusterSpecificInfo) // Remove certain metadata and status information from each item
-									.collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build());
+							boolean isSecret = base64DecodeSecretData && listObject.getString("kind").toLowerCase().startsWith("secret");
+							// Process lists containing items
+							builder.add(
+									resourceSchema,
+									listObject.getJsonArray("items").stream()
+											.map(r -> {
+												// Decode base64 encoded Secret data if requested in command args
+												if (isSecret) {
+													return this.base64DecodeSecrets(r.asJsonObject());
+												}
+												return (JsonObject) r;
+											})
+											.map(r -> {
+												// Apply the group/apiVersion and kind to the items from the list
+												String kind = listObject.getString("kind").replaceAll("List$", "");
+												return Json.createObjectBuilder(r)
+														       .add("kind", Json.createValue(kind))
+														       .add("kind", Json.createValue(kind))
+														       .add("apiVersion", Json.createValue(listObject.getString("apiVersion"))).build();
+											})
+											.map(this::removeClusterSpecificInfo) // Remove certain metadata and status information from each item
+											.peek(r -> {
+												if (r.getJsonObject("metadata").containsKey("ownerReferences")) {
+													String kind = listObject.getString("kind").replaceAll("List$", "");
+													String name = r.getJsonObject("metadata").getString("name");
+													JsonValue ownerReference = r.getJsonObject("metadata").getJsonArray("ownerReferences").get(0);
+													String apiVer = ownerReference.asJsonObject().getString("apiVersion");
+													String refKind = ownerReference.asJsonObject().getString("kind");
+													String refName = ownerReference.asJsonObject().getString("name");
+													LOG.debug("{}/{}: Owner reference to {}/{}/{}", kind, name, apiVer, refKind, refName);
+												}
+											})
+											.collect(Json::createArrayBuilder, JsonArrayBuilder::add, JsonArrayBuilder::addAll).build());
+						}
 					}
 				}
-			} catch(IOException|InterruptedException ioe) {
+			} catch (IOException | InterruptedException ioe) {
 				throw new APIAccessException(format("Unable to retrieve path '%s'", path.getKey()), ioe);
 			}
 		}
 
 		return builder.build();
+	}
+
+	private HttpClient getHttpClient() {
+		return HttpClient.newBuilder()
+					.sslContext(this.sslContext)
+					.connectTimeout(Duration.ofMillis(1000))
+					.build();
 	}
 
 	/**
@@ -326,6 +392,20 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link JsonObject} containing the sanitized Kubernetes resource object
 	 */
 	private JsonObject removeClusterSpecificInfo(JsonObject resource) {
+
+		JsonObject cleanUpRules;
+		try {
+			InputStream rulesInput;
+			if (rulesFile != null) {
+				rulesInput = new FileInputStream(rulesFile);
+			} else {
+				rulesInput = Main.class.getResourceAsStream("/sanitation_rules.json");
+			}
+		} catch (FileNotFoundException fnfe) {
+			LOG.error("Unable to load sanitation rules from file.", fnfe);
+			cleanUpRules = EMPTY_JSON_OBJECT;
+		}
+
 		// Copy the resource
 		JsonObjectBuilder sanitized = Json.createObjectBuilder(resource);
 
@@ -342,14 +422,7 @@ public class Main implements Callable<Integer> {
 		// when the annotations key exists
 		if (resource.getJsonObject("metadata").containsKey("annotations")) {
 			JsonObjectBuilder annotations = Json.createObjectBuilder(resource.getJsonObject("metadata").getJsonObject("annotations"))
-					                                .remove("kubectl.kubernetes.io/last-applied-configuration")
-					                                .remove("openshift.io/build-config.name")
-					                                .remove("openshift.io/build.number")
-					                                .remove("openshift.io/jenkins-blueocean-log-url")
-					                                .remove("openshift.io/jenkins-build-uri")
-					                                .remove("openshift.io/jenkins-console-log-url")
-					                                .remove("openshift.io/jenkins-log-url")
-					                                .remove("openshift.io/jenkins-status-json");
+					                                .remove("kubectl.kubernetes.io/last-applied-configuration");
 			metadata.remove("annotations");
 			metadata.add("annotations", annotations.build());
 		}
@@ -402,10 +475,12 @@ public class Main implements Callable<Integer> {
 	 * @return A {@link JsonObject} containing the Swagger API Specification for the cluster
 	 * @throws NotCurrentlyLoggedInException If the token does not work or the cluster is unreachable
 	 */
-	private JsonObject retrieveSwaggerSpecification(String kubeToken) throws NotCurrentlyLoggedInException {
-		HttpClient http = HttpClient.newHttpClient();
+	private JsonObject retrieveSwaggerSpecification(String kubeToken) throws NotCurrentlyLoggedInException, SecurityException {
+		HttpClient http = getHttpClient();
+		String apiSpecUrl = format("%s/openapi/v2?timeout=32s", kubeClusterUrl);
+		LOG.debug("API Spec URL: {}", apiSpecUrl);
 		HttpRequest apiSpecReq = HttpRequest.newBuilder()
-				                         .uri(URI.create(format("%s/openapi/v2?timeout=32s", kubeClusterUrl)))
+				                         .uri(URI.create(apiSpecUrl))
 																 .header("Accept", "application/json")
 																 .header("Authorization", format("Bearer %s", kubeToken))
 				                         .build();
@@ -419,10 +494,10 @@ public class Main implements Callable<Integer> {
 				parser.next();
 				return parser.getObject();
 			}
-		} catch (IOException|InterruptedException e) {
+		} catch (NotCurrentlyLoggedInException | SecurityException nclie) {
+			throw new NotCurrentlyLoggedInException(nclie.getLocalizedMessage(), nclie);
+		} catch (IOException | InterruptedException e) {
 			throw new NotCurrentlyLoggedInException("Unable to retrieve API details from the cluster. Check to ensure it is reachable and that your login has not timed out.", e);
-		} catch (NotCurrentlyLoggedInException nclie) {
-			throw nclie;
 		}
 	}
 
