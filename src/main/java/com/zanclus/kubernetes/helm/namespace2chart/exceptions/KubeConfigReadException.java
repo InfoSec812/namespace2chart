@@ -11,4 +11,8 @@ public class KubeConfigReadException extends Exception {
 	public KubeConfigReadException(Throwable t) {
 		super(MESSAGE, t);
 	}
+
+	public KubeConfigReadException(String localizedMessage, Exception e) {
+		super(localizedMessage, e);
+	}
 }

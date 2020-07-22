@@ -7,10 +7,12 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.logging.Formatter;
 import java.util.logging.LogRecord;
+import java.util.logging.SimpleFormatter;
 
 public class LogFormatter extends Formatter {
 	@Override
 	public String format(LogRecord r) {
+		SimpleFormatter simple = new SimpleFormatter();
 		DateTimeFormatter formatter =
 				DateTimeFormatter.ofLocalizedDateTime( FormatStyle.SHORT )
 						.withLocale(Locale.getDefault())
@@ -31,8 +33,8 @@ public class LogFormatter extends Formatter {
 			return Arrays.stream(t.getStackTrace())
 					       .map(e -> String.format("%s:%s", e.getClassName(), e.getMethodName()))
 					       .collect(
-							       () -> new StringBuilder("\b"),
-							       (acc, item) -> acc.append(item),
+							       () -> new StringBuilder(),
+							       (acc, item) -> acc.append("\t").append(item).append("\n"),
 							       (acc, accPrime) -> acc.append(accPrime.toString())
 					       ).toString();
 		}

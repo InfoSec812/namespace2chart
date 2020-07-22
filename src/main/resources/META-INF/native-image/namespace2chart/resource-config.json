@@ -2,6 +2,7 @@
   "bundles" : [
   ],
   "resources" : [
-    {"pattern":  ".*properties$"}
+    {"pattern":  ".*properties$"},
+    {"pattern":  ".*json$"}
   ]
 }
