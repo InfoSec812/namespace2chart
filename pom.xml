@@ -120,7 +120,7 @@
               <imageName>${project.name}</imageName>
               <mainClass>com.zanclus.kubernetes.helm.namespace2chart.Main</mainClass>
               <buildArgs>
-                --no-server --enable-https -H:+AddAllCharsets --no-fallback
+                --no-server --enable-https -H:+AddAllCharsets --no-fallback --report-unsupported-elements-at-runtime --allow-incomplete-classpath
               </buildArgs>
               <skip>false</skip>
             </configuration>

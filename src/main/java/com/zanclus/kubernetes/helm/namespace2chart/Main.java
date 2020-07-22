@@ -1,6 +1,7 @@
 package com.zanclus.kubernetes.helm.namespace2chart;
 
 import com.jayway.jsonpath.Configuration;
+import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.spi.json.JsonOrgJsonProvider;
 import com.jayway.jsonpath.spi.json.JsonProvider;
@@ -79,7 +80,7 @@ public class Main implements Callable<Integer> {
 			"PodDisruptionBudget"
 	};
 
-	@Option(names = {"-r", "--sanitation-rules"}, defaultValue = "A JSON file containing global and kind specific JsonPath selectors and replacement/removal information")
+	@Option(names = {"-r", "--sanitation-rules"}, description = "A JSON file containing global and kind specific JsonPath selectors and replacement/removal information")
 	File overrideSanitationRulesFile;
 
 	@Option(names = {"-v", "--verbose"}, description = "Outputs more debugging level information (Can be repeated up to 5 times for max verbosity)")
@@ -325,7 +326,6 @@ public class Main implements Callable<Integer> {
 						List<Object> resources = resourceList.getJSONArray("items").toList().stream()
 							.map(r -> new JSONObject((HashMap<String, Object>)r))
 							.map(r -> r.put("kind", gvk.getString("kind")))
-              .map(this::removeClusterSpecificInfo)
 							.map(r -> {
 								if (r.getString("kind").toLowerCase().contentEquals("secret")) {
 									return this.base64DecodeSecrets(r);
@@ -340,6 +340,7 @@ public class Main implements Callable<Integer> {
 								}
 								return r;
 							})
+              .map(this::removeClusterSpecificInfo)
 							.collect(Collectors.toList());
 						if (!resources.isEmpty()) {
 							builder.put(gavStr, resources);
@@ -359,7 +360,7 @@ public class Main implements Callable<Integer> {
 	 * @return A Secret as a {@link JSONObject} with the data decoded
 	 */
 	private JSONObject base64DecodeSecrets(JSONObject secret) {
-		var entries = secret.toMap().entrySet().stream()
+		var entries = secret.getJSONObject("data").toMap().entrySet().stream()
 				.collect(
 						JSONObject::new,
 						(acc, item) -> acc.put(
@@ -382,19 +383,24 @@ public class Main implements Callable<Integer> {
 	private JSONObject removeClusterSpecificInfo(final JSONObject resource) {
 		InputStream is;
 		try {
-			if (overrideSanitationRulesFile!=null) {
+			if (overrideSanitationRulesFile != null) {
 				is = new FileInputStream(overrideSanitationRulesFile);
 			} else {
-				is = Main.class.getResourceAsStream("sanitation_rules.json");
+				is = Main.class.getResourceAsStream("/sanitation_rules.json");
 			}
-			JSONObject rules = (JSONObject) JsonPath.parse(is);
+			JSONObject rules = JsonPath.parse(is).json();
 
 			JSONArray globalPaths = rules.getJSONArray("global");
 			globalPaths.toList().stream()
 					.forEach(rule -> {
-						String pathStr = ((JSONObject)rule).keys().next();
-						String replacement = ((JSONObject)rule).getString(pathStr);
-						JsonPath.parse(resource).set(pathStr, replacement);
+						String pathStr = ((HashMap<String, Object>)rule).keySet().iterator().next();
+						String replacement = ((HashMap<String, ? extends String>)rule).get(pathStr);
+						DocumentContext ctx = JsonPath.parse(resource);
+						if (replacement == null) {
+							ctx.delete(pathStr);
+						} else {
+							ctx.set(pathStr, replacement);
+						}
 					});
 
 			String apiVersionAndGroup = resource.getString("apiVersion");
